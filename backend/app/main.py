@@ -88,8 +88,26 @@ def _validate_filename(filename: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _sessions_root() -> Path:
+    """Return the canonical absolute path of the sessions root directory."""
+    return (DATA_DIR / "sessions").resolve()
+
+
 def _session_dir(session_id: str) -> Path:
-    return DATA_DIR / "sessions" / session_id
+    """
+    Return the resolved, safe absolute path for a session directory.
+
+    Raises HTTP 400 if the resolved path escapes the sessions root
+    (defence-in-depth on top of UUID regex validation).
+    """
+    root = _sessions_root()
+    candidate = (root / session_id).resolve()
+    # Ensure the resolved path is directly inside root (not a parent or sibling).
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session id") from None
+    return candidate
 
 
 def _read_status(session_id: str) -> dict[str, Any]:
@@ -264,7 +282,13 @@ def get_preview_file(session_id: str, filename: str) -> FileResponse:
     """Serve an individual PNG preview frame."""
     _validate_session_id(session_id)
     _validate_filename(filename)
-    png_path = _session_dir(session_id) / "preview" / filename
+    preview_dir = _session_dir(session_id) / "preview"
+    # Resolve and confirm the file is inside the preview directory.
+    png_path = (preview_dir / filename).resolve()
+    try:
+        png_path.relative_to(preview_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename") from None
     if not png_path.exists() or not png_path.is_file():
         raise HTTPException(status_code=404, detail="Preview file not found")
     return FileResponse(png_path, media_type="image/png")
