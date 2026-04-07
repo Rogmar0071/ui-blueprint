@@ -46,6 +46,7 @@ _LINEAR_RESIDUAL_THRESHOLD = 2.0
 _BEZIER_RESIDUAL_THRESHOLD = 3.5
 _SCROLL_EVENT_THRESHOLD = 12.0
 _TAP_COLOR_THRESHOLD = 14.0
+_FRAME_TIMESTAMP_TOLERANCE_MS = 0.5
 
 
 def _build_synthetic_meta() -> dict[str, Any]:
@@ -201,7 +202,7 @@ def _sample_video_frames(
         last_index = 0
         for frame_index, frame_array in enumerate(reader):
             timestamp_ms = frame_index / fps * 1000.0
-            if timestamp_ms + 0.5 < next_sample_ms:
+            if timestamp_ms + _FRAME_TIMESTAMP_TOLERANCE_MS < next_sample_ms:
                 continue
             image = Image.fromarray(frame_array).convert("RGB")
             if not samples:
@@ -227,15 +228,15 @@ def _connected_components(mask: Image.Image) -> list[tuple[int, int, int, int, i
     """Return bounding boxes for connected components in a binary mask."""
     width, height = mask.size
     pixels = mask.load()
-    visited = [[False for _ in range(height)] for _ in range(width)]
+    visited = [[False for _ in range(width)] for _ in range(height)]
     boxes: list[tuple[int, int, int, int, int]] = []
 
     for x in range(width):
         for y in range(height):
-            if visited[x][y] or pixels[x, y] == 0:
+            if visited[y][x] or pixels[x, y] == 0:
                 continue
             stack = [(x, y)]
-            visited[x][y] = True
+            visited[y][x] = True
             min_x = max_x = x
             min_y = max_y = y
             area = 0
@@ -248,8 +249,8 @@ def _connected_components(mask: Image.Image) -> list[tuple[int, int, int, int, i
                 max_y = max(max_y, cy)
                 for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
                     if 0 <= nx < width and 0 <= ny < height:
-                        if not visited[nx][ny] and pixels[nx, ny] != 0:
-                            visited[nx][ny] = True
+                        if not visited[ny][nx] and pixels[nx, ny] != 0:
+                            visited[ny][nx] = True
                             stack.append((nx, ny))
             if area >= _MIN_COMPONENT_AREA:
                 boxes.append((min_x, min_y, max_x, max_y, area))
@@ -310,6 +311,11 @@ def _background_color(image: Image.Image) -> tuple[int, int, int]:
     ]
     means = [ImageStat.Stat(sample).mean for sample in samples]
     return tuple(int(sum(values) / len(values)) for values in zip(*means))
+
+
+def _compute_dark_text_cutoff(background_rgb: tuple[int, int, int]) -> int:
+    """Compute a grayscale cutoff for likely dark text against the sampled background."""
+    return max(0, sum(background_rgb) // 3 - _TEXT_DARK_THRESHOLD)
 
 
 def _appearance_signature(image: Image.Image, bbox: dict[str, float]) -> dict[str, Any]:
@@ -422,9 +428,8 @@ def _detect_elements(frame_rgb: bytes, width: int, height: int) -> list[dict[str
     diff_mask = diff_mask.point(lambda value: 255 if value > _BG_DIFF_THRESHOLD else 0)
     edge_mask = ImageOps.grayscale(image).filter(ImageFilter.FIND_EDGES)
     edge_mask = edge_mask.point(lambda value: 255 if value > _EDGE_THRESHOLD else 0)
-    dark_mask = ImageOps.grayscale(image).point(
-        lambda value: 255 if value < max(0, sum(background_rgb) // 3 - _TEXT_DARK_THRESHOLD) else 0
-    )
+    dark_cutoff = _compute_dark_text_cutoff(background_rgb)
+    dark_mask = ImageOps.grayscale(image).point(lambda value: 255 if value < dark_cutoff else 0)
     combined = ImageChops.lighter(ImageChops.lighter(diff_mask, edge_mask), dark_mask)
     combined = combined.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(3))
 
@@ -705,10 +710,10 @@ def _asset_id(index: int) -> str:
     return f"asset_{index:04d}"
 
 
-def _placeholder_phash(data: str) -> str:
-    """Return a short deterministic hex string as a placeholder perceptual hash."""
+def _content_hash(data: str) -> str:
+    """Return a short deterministic content hash (not a perceptual hash)."""
     digest = zlib.adler32(data.encode()) & 0xFFFFFFFF
-    return hashlib.md5(struct.pack(">I", digest)).hexdigest()[:12]  # noqa: S324
+    return hashlib.blake2b(struct.pack(">I", digest), digest_size=6).hexdigest()
 
 
 def _clean_catalog_entry(
@@ -770,7 +775,7 @@ def _export_asset_crops(
                     "id": asset_id,
                     "kind": "screenshot_crop",
                     "path": str(assets_dir / relative_path),
-                    "phash": _placeholder_phash(f"{element_id}:{timestamp}"),
+                    "phash": _content_hash(f"{element_id}:{timestamp}"),
                     "bbox": bbox,
                     "frame_ms": timestamp,
                 }
@@ -929,7 +934,11 @@ def extract(
         detection_confidence = min(
             1.0, (sum(non_container_counts) / max(len(non_container_counts), 1)) / 4.0
         )
-        tracking_confidence = min(1.0, len(chunk_element_ids) / max(len(tracks), 1) * 4.0)
+        tracked_element_ids = {track["element_id"] for track in tracks}
+        tracking_confidence = min(
+            1.0,
+            len(tracked_element_ids) / max(len(chunk_element_ids), 1),
+        )
         chunks.append(
             {
                 "t0_ms": round(chunk_start, 3),

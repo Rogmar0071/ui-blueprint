@@ -17,6 +17,7 @@ from typing import Any
 
 try:
     from PIL import Image, ImageDraw, ImageFont
+
     _PIL_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _PIL_AVAILABLE = False
@@ -26,23 +27,29 @@ except ImportError:  # pragma: no cover
 # Colour palette for element types
 # ---------------------------------------------------------------------------
 _TYPE_COLORS: dict[str, tuple[int, int, int]] = {
-    "container":   (220, 220, 220),
-    "button":      (70, 130, 180),
-    "text":        (60, 179, 113),
-    "icon":        (255, 165, 0),
-    "list_item":   (147, 112, 219),
+    "container": (220, 220, 220),
+    "button": (70, 130, 180),
+    "text": (60, 179, 113),
+    "icon": (255, 165, 0),
+    "list_item": (147, 112, 219),
     "scroll_view": (100, 149, 237),
     "input_field": (255, 215, 0),
-    "keyboard":    (169, 169, 169),
-    "cursor":      (255, 0, 0),
-    "overlay":     (128, 0, 128),
-    "unknown":     (160, 160, 160),
+    "keyboard": (169, 169, 169),
+    "cursor": (255, 0, 0),
+    "overlay": (128, 0, 128),
+    "unknown": (160, 160, 160),
 }
 
 _DEFAULT_COLOR = (160, 160, 160)
 _BG_COLOR = (245, 245, 245)
 _BORDER_WIDTH = 3
 _MAX_PREVIEW_SIZE = (540, 960)  # downscale for readability
+_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Debian/Ubuntu
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",  # Fedora/RHEL
+    "/Library/Fonts/Arial.ttf",  # macOS
+    "C:\\Windows\\Fonts\\arial.ttf",  # Windows
+]
 
 
 def _load_blueprint(path: Path) -> dict[str, Any]:
@@ -86,8 +93,7 @@ def render_preview(
     """
     if not _PIL_AVAILABLE:
         raise RuntimeError(
-            "Pillow is required for preview rendering. "
-            "Install it with: pip install Pillow"
+            "Pillow is required for preview rendering. Install it with: pip install Pillow"
         )
 
     blueprint = _load_blueprint(blueprint_path)
@@ -96,9 +102,7 @@ def render_preview(
     height_px: int = int(meta.get("height_px", 1920))
 
     # Build element catalog lookup: id → element_def
-    catalog: dict[str, Any] = {
-        el["id"]: el for el in blueprint.get("elements_catalog", [])
-    }
+    catalog: dict[str, Any] = {el["id"]: el for el in blueprint.get("elements_catalog", [])}
 
     scale = _scale_factor(width_px, height_px)
     canvas_w = max(1, round(width_px * scale))
@@ -118,12 +122,6 @@ def render_preview(
         draw = ImageDraw.Draw(img)
 
         # Try to load a basic font from common OS locations; fall back to Pillow's default.
-        _FONT_CANDIDATES = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",        # Debian/Ubuntu
-            "/usr/share/fonts/dejavu/DejaVuSans.ttf",                  # Fedora/RHEL
-            "/Library/Fonts/Arial.ttf",                                # macOS
-            "C:\\Windows\\Fonts\\arial.ttf",                           # Windows
-        ]
         font = None
         small_font = None
         for _fp in _FONT_CANDIDATES:
@@ -155,8 +153,7 @@ def render_preview(
 
             # Blend fill with background based on opacity.
             blended = tuple(
-                round(fill_rgb[i] * opacity + _BG_COLOR[i] * (1 - opacity))
-                for i in range(3)
+                round(fill_rgb[i] * opacity + _BG_COLOR[i] * (1 - opacity)) for i in range(3)
             )
 
             draw.rectangle(

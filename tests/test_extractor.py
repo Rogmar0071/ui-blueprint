@@ -278,8 +278,9 @@ class TestVideoDecoderPath:
             "fps": 12.0,
             "duration_ms": 1000.0,
         }
+        frame_interval_ms = 1000.0 / 12.0
         for idx in range(12):
-            frame = _generate_synthetic_frame(meta, idx * (1000.0 / 12.0)).resize((368, 640))
+            frame = _generate_synthetic_frame(meta, idx * frame_interval_ms).resize((368, 640))
             frames.append(numpy.asarray(frame))
 
         with imageio.get_writer(video_path, fps=12, format="FFMPEG") as writer:
