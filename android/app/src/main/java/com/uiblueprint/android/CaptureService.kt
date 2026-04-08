@@ -38,6 +38,7 @@ class CaptureService : Service() {
     private var mediaRecorder: MediaRecorder? = null
     private var outputFile: File? = null
     private val handler = Handler(Looper.getMainLooper())
+    private val finishRecordingRunnable = Runnable { finishRecording() }
     private lateinit var captureResultStore: CaptureResultStore
     private var isFinished = false
     private var recordingStartedAtMs: Long? = null
@@ -133,7 +134,7 @@ class CaptureService : Service() {
             recordingStartedAtMs = SystemClock.elapsedRealtime()
 
             // Stop after CLIP_DURATION_MS.
-            handler.postDelayed({ finishRecording() }, CLIP_DURATION_MS.toLong())
+            handler.postDelayed(finishRecordingRunnable, CLIP_DURATION_MS.toLong())
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
             signalCaptureCompleted(CaptureDoneEvent(error = ERROR_START_FAILED))
@@ -144,7 +145,7 @@ class CaptureService : Service() {
     private fun finishRecording() {
         if (isFinished) return
         isFinished = true
-        handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacks(finishRecordingRunnable)
         try {
             mediaRecorder?.stop()
         } catch (_: Exception) {
@@ -190,7 +191,7 @@ class CaptureService : Service() {
     }
 
     override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacks(finishRecordingRunnable)
         mediaRecorder?.release()
         virtualDisplay?.release()
         mediaProjection?.stop()

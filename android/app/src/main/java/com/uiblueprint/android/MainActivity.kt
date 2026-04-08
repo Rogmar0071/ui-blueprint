@@ -256,7 +256,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun scheduleRecordingWatchdog(delayMs: Long) {
         watchdogHandler.removeCallbacks(recordingWatchdogRunnable)
-        watchdogHandler.postDelayed(recordingWatchdogRunnable, delayMs.coerceAtLeast(0L))
+        watchdogHandler.postDelayed(recordingWatchdogRunnable, delayMs)
     }
 
     private fun showIdleUi() {
