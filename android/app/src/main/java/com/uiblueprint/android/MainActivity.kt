@@ -56,8 +56,7 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             startCapture(result.resultCode, result.data!!)
         } else {
-            showIdleUi()
-            Toast.makeText(this, ERROR_PERMISSION_DENIED, Toast.LENGTH_SHORT).show()
+            handlePermissionDenied()
         }
     }
 
@@ -106,6 +105,9 @@ class MainActivity : AppCompatActivity() {
             IntentFilter(CaptureService.ACTION_CAPTURE_DONE),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        if (drainPendingCaptureResult()) {
+            return
+        }
         recoverPendingCaptureState()
     }
 
@@ -223,12 +225,21 @@ class MainActivity : AppCompatActivity() {
         showCaptureError(CaptureDoneEvent.ERROR_TIMEOUT)
     }
 
-    private fun recoverPendingCaptureState() {
-        captureResultStore.getLastResult()?.let {
-            processCaptureDone(it)
-            return
-        }
+    private fun handlePermissionDenied() {
+        watchdogHandler.removeCallbacks(recordingWatchdogRunnable)
+        captureResultStore.clearRecordingStarted()
+        captureResultStore.clearLastResult()
+        showIdleUi()
+        Toast.makeText(this, ERROR_PERMISSION_DENIED, Toast.LENGTH_SHORT).show()
+    }
 
+    private fun drainPendingCaptureResult(): Boolean {
+        val persistedResult = captureResultStore.getLastResult() ?: return false
+        processCaptureDone(persistedResult)
+        return true
+    }
+
+    private fun recoverPendingCaptureState() {
         val startedAtMs = captureResultStore.getRecordingStartedAtMs() ?: run {
             showIdleUi()
             return
