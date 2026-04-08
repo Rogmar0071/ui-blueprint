@@ -158,6 +158,111 @@ See [`schema/blueprint.schema.json`](schema/blueprint.schema.json) for the full 
 
 ---
 
+## AI-Derived Domain Profiles + Blueprint Compiler
+
+`ui_blueprint` includes a **compiler pipeline** that turns video-derived vision
+primitives into a structured **Blueprint Artifact** (Blueprint IR). Domains are
+never hard-coded; they are *derived by AI* from captured media and must be
+confirmed by a user before the compiler will run.
+
+### Key concepts
+
+#### Domain Profile
+An AI-derived description of a real-world artifact class. It carries:
+
+| Field | Description |
+|---|---|
+| `id` | Stable UUID for this profile version |
+| `name` | Human-readable name (AI-suggested, editable while draft) |
+| `status` | Lifecycle state: `draft` → `confirmed` → `archived` |
+| `derived_from` | Provenance: which media + which AI provider produced it |
+| `capture_protocol` | Ordered steps the AI recommends for thorough media capture |
+| `validators` | Rules used to assess completeness/quality |
+| `exporters` | Output targets (WMS import, assembly plan, CAD export, …) |
+
+**Invariant**: Only `confirmed` profiles may be used for compilation.
+Once confirmed, a profile is immutable — editing requires creating a new draft.
+
+#### Blueprint Artifact (BlueprintIR)
+The compiled output. It is usable by humans, systems, and agents to reconstruct
+a real-world artifact. Key fields:
+
+| Field | Description |
+|---|---|
+| `id` | UUID for this artifact |
+| `domain_profile_id` | UUID of the confirmed DomainProfile used |
+| `schema_version` | Object schema version (`v1.1.0`) under steering contract v1.1.1 |
+| `source` | Media provenance (media_id, optional time range) |
+| `entities[]` | Detected parts/features with type, attributes, confidence |
+| `relations[]` | Directed edges between entities (e.g. `stacked_on`) |
+| `constraints[]` | Structural constraints (e.g. `grid_alignment`) |
+| `completeness` | Score 0–1 + list of missing information |
+| `provenance[]` | Evidence records (which extractor, which frames, …) |
+
+### Workflow: derive → edit → confirm → compile
+
+```
+POST /api/domains/derive          # AI derives draft profile candidates
+GET  /api/domains/{id}            # inspect a draft
+PATCH /api/domains/{id}           # edit name/steps/validators while still draft
+POST /api/domains/{id}/confirm    # lock the profile (non-idempotent)
+POST /api/blueprints/compile      # compile BlueprintIR (requires confirmed domain)
+```
+
+All endpoints are under `/api` and return `application/json`.
+Error responses use the shape `{"error": {"code": "...", "message": "..."}}`.
+
+### Enforced rule: domain must be confirmed
+
+Calling `POST /api/blueprints/compile` without a confirmed domain returns:
+
+```json
+{"error": {"code": "domain_not_confirmed", "message": "..."}}
+```
+HTTP 400. The compiler also raises `BlueprintCompileError` (a `ValueError`) at
+the Python level.
+
+### Running the demo
+
+```bash
+# Start the backend
+pip install -r backend/requirements.txt
+API_KEY=secret uvicorn backend.app.main:app --reload
+
+# Derive candidates from a mock media input
+curl -s -X POST http://localhost:8000/api/domains/derive \
+  -H "Content-Type: application/json" \
+  -d '{"media":{"media_id":"demo-001","media_type":"video"},"options":{"hint":"warehouse pallet barcodes","max_candidates":3}}' \
+  | python3 -m json.tool
+
+# Confirm the first candidate (replace <id> with a domain_profile_id from above)
+curl -s -X POST http://localhost:8000/api/domains/<id>/confirm \
+  -H "Content-Type: application/json" \
+  -d '{"confirmed_by":"demo-user","note":"looks good"}' \
+  | python3 -m json.tool
+
+# Compile the blueprint
+curl -s -X POST http://localhost:8000/api/blueprints/compile \
+  -H "Content-Type: application/json" \
+  -d '{"media":{"media_id":"demo-001","media_type":"video"},"domain_profile_id":"<id>"}' \
+  | python3 -m json.tool
+```
+
+### Extending with a real AI provider
+
+Replace `StubDomainDerivationProvider` in `ui_blueprint/domain/derivation.py`:
+
+```python
+class MyLLMProvider(DomainDerivationProvider):
+    def derive(self, media_input: dict, max_candidates: int = 3) -> list[DomainProfile]:
+        # Call your vision/LLM API here; return draft DomainProfile objects.
+        ...
+```
+
+Then wire it into `backend/app/domain_routes.py` via `_provider = MyLLMProvider()`.
+
+---
+
 ## License
 
 MIT
