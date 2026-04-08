@@ -1,5 +1,6 @@
 package com.uiblueprint.android
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -13,8 +14,8 @@ import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.util.DisplayMetrics
 import android.util.Log
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import java.io.File
 import java.text.SimpleDateFormat
@@ -37,18 +38,22 @@ class CaptureService : Service() {
     private var mediaRecorder: MediaRecorder? = null
     private var outputFile: File? = null
     private val handler = Handler(Looper.getMainLooper())
+    private lateinit var captureResultStore: CaptureResultStore
     private var isFinished = false
+    private var recordingStartedAtMs: Long? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        captureResultStore = SharedPreferencesCaptureResultStore(applicationContext)
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
+            signalCaptureCompleted(CaptureDoneEvent(error = ERROR_CAPTURE_REQUEST_LOST))
             stopSelf()
             return START_NOT_STICKY
         }
@@ -58,11 +63,17 @@ class CaptureService : Service() {
             intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
         } else {
             @Suppress("DEPRECATION")
-            intent.getParcelableExtra(EXTRA_RESULT_DATA)
+                intent.getParcelableExtra(EXTRA_RESULT_DATA)
+        }
+
+        if (resultCode != Activity.RESULT_OK) {
+            signalCaptureCompleted(CaptureDoneEvent(error = ERROR_PERMISSION_UNAVAILABLE))
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         if (resultData == null) {
-            broadcastError("Missing MediaProjection result data")
+            signalCaptureCompleted(CaptureDoneEvent(error = ERROR_PERMISSION_UNAVAILABLE))
             stopSelf()
             return START_NOT_STICKY
         }
@@ -77,8 +88,15 @@ class CaptureService : Service() {
         val height = metrics.heightPixels
         val dpi = metrics.densityDpi
 
+        val outputDir = getExternalFilesDir(null)
+        if (outputDir == null) {
+            signalCaptureCompleted(CaptureDoneEvent(error = ERROR_OUTPUT_UNAVAILABLE))
+            stopSelf()
+            return
+        }
+
         outputFile = File(
-            getExternalFilesDir(null),
+            outputDir,
             "clip_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.mp4",
         )
 
@@ -112,12 +130,13 @@ class CaptureService : Service() {
             }
 
             mediaRecorder!!.start()
+            recordingStartedAtMs = SystemClock.elapsedRealtime()
 
             // Stop after CLIP_DURATION_MS.
             handler.postDelayed({ finishRecording() }, CLIP_DURATION_MS.toLong())
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
-            broadcastError(e.message ?: "Unknown error")
+            signalCaptureCompleted(CaptureDoneEvent(error = ERROR_START_FAILED))
             stopSelf()
         }
     }
@@ -125,6 +144,7 @@ class CaptureService : Service() {
     private fun finishRecording() {
         if (isFinished) return
         isFinished = true
+        handler.removeCallbacksAndMessages(null)
         try {
             mediaRecorder?.stop()
         } catch (_: Exception) {
@@ -136,25 +156,35 @@ class CaptureService : Service() {
         mediaProjection?.stop()
         mediaProjection = null
 
+        val durationMs = recordingStartedAtMs
+            ?.let { (SystemClock.elapsedRealtime() - it).toInt().coerceAtLeast(0) }
         val clip = outputFile
         if (clip != null && clip.exists() && clip.length() > 0) {
-            broadcastDone(clip)
+            signalCaptureCompleted(
+                CaptureDoneEvent(
+                    clipPath = clip.absolutePath,
+                    recordingDurationMs = durationMs,
+                ),
+            )
         } else {
-            broadcastError("Output file missing or empty")
+            signalCaptureCompleted(
+                CaptureDoneEvent(
+                    error = ERROR_FINALIZE_FAILED,
+                    recordingDurationMs = durationMs,
+                ),
+            )
         }
         stopSelf()
     }
 
-    private fun broadcastDone(clip: File) {
+    private fun signalCaptureCompleted(event: CaptureDoneEvent) {
+        val normalizedEvent = event.normalized()
+        captureResultStore.saveLastResult(normalizedEvent)
         sendBroadcast(Intent(ACTION_CAPTURE_DONE).apply {
-            putExtra(EXTRA_CLIP_PATH, clip.absolutePath)
-            setPackage(packageName)
-        })
-    }
-
-    private fun broadcastError(message: String) {
-        sendBroadcast(Intent(ACTION_CAPTURE_DONE).apply {
-            putExtra(EXTRA_ERROR, message)
+            putExtra(EXTRA_SCHEMA_VERSION, normalizedEvent.schemaVersion)
+            normalizedEvent.clipPath?.let { putExtra(EXTRA_CLIP_PATH, it) }
+            normalizedEvent.error?.let { putExtra(EXTRA_ERROR, it) }
+            normalizedEvent.recordingDurationMs?.let { putExtra(EXTRA_RECORDING_DURATION_MS, it) }
             setPackage(packageName)
         })
     }
@@ -194,11 +224,18 @@ class CaptureService : Service() {
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_CLIP_PATH = "clip_path"
         const val EXTRA_ERROR = "error"
+        const val EXTRA_SCHEMA_VERSION = "schema_version"
+        const val EXTRA_RECORDING_DURATION_MS = "recording_duration_ms"
 
         private const val CHANNEL_ID = "capture_channel"
         private const val NOTIF_ID = 1001
         private const val CLIP_DURATION_MS = 10_000
         private const val VIDEO_BITRATE = 4_000_000
         private const val VIDEO_FPS = 30
+        private const val ERROR_CAPTURE_REQUEST_LOST = "Screen capture could not be started."
+        private const val ERROR_PERMISSION_UNAVAILABLE = "Screen capture permission data was unavailable."
+        private const val ERROR_OUTPUT_UNAVAILABLE = "Capture output could not be created."
+        private const val ERROR_START_FAILED = "Capture failed to start recording."
+        private const val ERROR_FINALIZE_FAILED = "Capture failed to finalize recording."
     }
 }
