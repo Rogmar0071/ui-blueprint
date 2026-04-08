@@ -16,14 +16,9 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
 import com.uiblueprint.android.databinding.ActivityMainBinding
-import org.json.JSONObject
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.UUID
 
 /**
  * Main screen.
@@ -32,8 +27,10 @@ import java.util.Locale
  * 1. Requests MediaProjection permission.
  * 2. Starts CaptureService (foreground, mediaProjection type).
  * 3. CaptureService records 10 s and broadcasts CAPTURE_DONE.
- * 4. MainActivity picks up the broadcast and enqueues UploadWorker.
- * 5. A simple session list (in-memory) shows status of each upload.
+ * 4. MainActivity inserts the clip into the device Gallery via MediaStore.
+ * 5. A simple session list (in-memory) shows [saved] or [failed] status.
+ *
+ * Backend upload is disabled by default; see [MediaStoreVideoSaver] for local storage.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -153,43 +150,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onCaptureDone(clip: File) {
-        val meta = buildMeta()
-        val sessionId = UploadWorker.enqueue(applicationContext, clip.absolutePath, meta)
-        sessions.add(0, SessionItem(sessionId, STATUS_ENQUEUED, clip.name))
-        renderSessionList()
-        observeWorkerStatus(sessionId)
-    }
-
-    private fun buildMeta(): String {
-        return JSONObject().apply {
-            put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
-            put("os_version", Build.VERSION.RELEASE)
-            put("sdk_int", Build.VERSION.SDK_INT)
-            put("timestamp", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date()))
-        }.toString()
-    }
-
-    private fun observeWorkerStatus(sessionId: String) {
-        // Each call observes a distinct LiveData keyed by the unique sessionId tag.
-        // All observers are automatically removed when the Activity is destroyed.
-        WorkManager.getInstance(this)
-            .getWorkInfosByTagLiveData(sessionId)
-            .observe(this) { workInfos ->
-                val info = workInfos?.firstOrNull() ?: return@observe
-                val status = when (info.state) {
-                    WorkInfo.State.ENQUEUED -> STATUS_ENQUEUED
-                    WorkInfo.State.RUNNING -> STATUS_UPLOADING
-                    WorkInfo.State.SUCCEEDED -> STATUS_COMPLETED
-                    WorkInfo.State.FAILED -> STATUS_FAILED
-                    WorkInfo.State.BLOCKED -> STATUS_BLOCKED
-                    WorkInfo.State.CANCELLED -> STATUS_CANCELLED
-                }
-                val idx = sessions.indexOfFirst { it.id == sessionId }
-                if (idx >= 0) {
-                    sessions[idx] = sessions[idx].copy(status = status)
-                    renderSessionList()
-                }
+        val sessionId = UUID.randomUUID().toString()
+        when (val result = MediaStoreVideoSaver.saveClipToGallery(applicationContext, clip)) {
+            is MediaStoreVideoSaver.SaveResult.Success -> {
+                sessions.add(0, SessionItem(sessionId, STATUS_SAVED, result.displayName, result.uriString))
+                renderSessionList()
+                Toast.makeText(this, "Saved to Gallery", Toast.LENGTH_SHORT).show()
             }
+            is MediaStoreVideoSaver.SaveResult.Failure -> {
+                sessions.add(0, SessionItem(sessionId, STATUS_FAILED, clip.name))
+                renderSessionList()
+                showCaptureError(result.userMessage)
+            }
+        }
     }
 
     private fun processCaptureDone(event: CaptureDoneEvent) {
@@ -295,18 +268,14 @@ class MainActivity : AppCompatActivity() {
         binding.tvSessions.text = sessions.joinToString("\n") { "• ${it.label}  [${it.status}]" }
     }
 
-    data class SessionItem(val id: String, val status: String, val label: String)
+    data class SessionItem(val id: String, val status: String, val label: String, val uri: String? = null)
 
     companion object {
         private const val RECORDING_TIMEOUT_MS = 15_000L
         private const val ERROR_PREFIX = "Capture failed"
         private const val ERROR_PERMISSION_DENIED = "Screen capture permission denied"
         private const val ERROR_START_FAILED = "Capture failed to start recording."
-        const val STATUS_ENQUEUED = "enqueued"
-        const val STATUS_UPLOADING = "uploading"
-        const val STATUS_COMPLETED = "completed"
+        const val STATUS_SAVED = "saved"
         const val STATUS_FAILED = "failed"
-        const val STATUS_BLOCKED = "blocked"
-        const val STATUS_CANCELLED = "cancelled"
     }
 }

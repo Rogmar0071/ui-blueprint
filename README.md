@@ -263,6 +263,46 @@ Then wire it into `backend/app/domain_routes.py` via `_provider = MyLLMProvider(
 
 ---
 
+## Android app
+
+The Android app (`android/`) records a 10-second screen clip using MediaProjection and saves it directly to the device Gallery — no backend required.
+
+### How recordings are saved
+
+After each recording the clip is inserted into the device Gallery via `MediaStore.Video.Media`:
+
+| Android version | Storage mechanism |
+|---|---|
+| API 29+ (Android 10+) | Scoped storage: `RELATIVE_PATH = Movies/UIBlueprint`, `IS_PENDING` flag for atomic write |
+| API 26–28 (Android 8–9) | MediaStore insert with bytes written through the returned `Uri` |
+
+Clips appear in your Gallery / Files app under **Movies → UIBlueprint** and are named `clip_yyyyMMdd_HHmmss.mp4`.
+
+### Backend upload is disabled by default
+
+`UploadWorker` is present in the source but is **not invoked** in the default app flow.  
+Every recording is saved locally and the session list shows `[saved]` on success or `[failed]` on error.
+
+To re-enable backend upload for development:
+1. Add `BACKEND_BASE_URL` and `BACKEND_API_KEY` to `android/local.properties`.
+2. Replace the `onCaptureDone` call in `MainActivity.kt` with `UploadWorker.enqueue(...)`.
+
+### Build and run on a device
+
+```bash
+cd android
+./gradlew assembleDebug          # builds debug APK
+./gradlew installDebug           # installs to a connected device / emulator
+```
+
+Run unit tests (no device needed):
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
+---
+
 ## License
 
 MIT
