@@ -275,10 +275,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCaptureError(message: String) {
-        val displayMessage = if (message.startsWith("Capture failed", ignoreCase = true)) {
+        val displayMessage = if (message.startsWith(ERROR_PREFIX, ignoreCase = true)) {
             message
         } else {
-            "Capture failed: $message"
+            "$ERROR_PREFIX: $message"
         }
         Toast.makeText(this, displayMessage, Toast.LENGTH_LONG).show()
     }
@@ -300,6 +300,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val RECORDING_TIMEOUT_MS = 15_000L
+        private const val ERROR_PREFIX = "Capture failed"
         private const val ERROR_PERMISSION_DENIED = "Screen capture permission denied"
         private const val ERROR_START_FAILED = "Capture failed to start recording."
         const val STATUS_ENQUEUED = "enqueued"
