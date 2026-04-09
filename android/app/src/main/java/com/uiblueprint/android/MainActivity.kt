@@ -6,9 +6,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.projection.MediaProjectionManager
-import android.os.Handler
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.View
@@ -17,6 +17,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.uiblueprint.android.databinding.ActivityMainBinding
+import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
@@ -37,8 +38,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var captureResultStore: CaptureResultStore
     private val watchdogHandler = Handler(Looper.getMainLooper())
+    private val uploadPollHandler = Handler(Looper.getMainLooper())
     private val recordingCompletionHelper = RecordingCompletionHelper(RECORDING_TIMEOUT_MS)
     private val sessions = mutableListOf<SessionItem>()
+    private var lastClipPath: String? = null
+    private var lastRecordingDurationMs: Int? = null
+    // Cancellation flag: set false in onPause so in-flight poll threads skip their post-back.
+    @Volatile private var uploadPollActive = false
     private val recordingWatchdogRunnable = Runnable {
         val startedAtMs = captureResultStore.getRecordingStartedAtMs() ?: return@Runnable
         if (recordingCompletionHelper.hasTimedOut(startedAtMs, SystemClock.elapsedRealtime())) {
@@ -90,12 +96,15 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.btnRecord.setOnClickListener { onRecordClicked() }
+        binding.btnAnalyze.setOnClickListener { onAnalyzeClicked() }
+        binding.btnChat.setOnClickListener { onChatClicked() }
         renderSessionList()
         showIdleUi()
     }
 
     override fun onResume() {
         super.onResume()
+        uploadPollActive = true
         ContextCompat.registerReceiver(
             this,
             captureReceiver,
@@ -107,7 +116,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        uploadPollActive = false
         watchdogHandler.removeCallbacks(recordingWatchdogRunnable)
+        uploadPollHandler.removeCallbacksAndMessages(null)
         unregisterReceiver(captureReceiver)
     }
 
@@ -149,7 +160,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun onCaptureDone(clip: File) {
+    private fun onCaptureDone(clip: File, recordingDurationMs: Int?) {
+        lastClipPath = clip.absolutePath
+        lastRecordingDurationMs = recordingDurationMs
+        binding.btnAnalyze.isEnabled = true
         val sessionId = UUID.randomUUID().toString()
         when (val result = MediaStoreVideoSaver.saveClipToGallery(applicationContext, clip)) {
             is MediaStoreVideoSaver.SaveResult.Success -> {
@@ -181,7 +195,7 @@ class MainActivity : AppCompatActivity() {
                 showCaptureError(CaptureDoneEvent.ERROR_NO_OUTPUT)
                 return
             }
-            onCaptureDone(File(clipPath))
+            onCaptureDone(File(clipPath), normalizedEvent.recordingDurationMs)
         } finally {
             clearRecoveryState()
         }
@@ -202,6 +216,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun recoverPendingCaptureState() {
+        // Fallback: if a completed capture result is stored (broadcast was missed),
+        // process it now — this also sets lastClipPath via onCaptureDone.
         captureResultStore.getLastResult()?.let {
             processCaptureDone(it)
             return
@@ -256,6 +272,71 @@ class MainActivity : AppCompatActivity() {
     }
 
     // -------------------------------------------------------------------------
+    // Analyze button
+    // -------------------------------------------------------------------------
+
+    private fun onAnalyzeClicked() {
+        val clipPath = lastClipPath
+        if (clipPath == null) {
+            binding.tvStatus.text = getString(R.string.status_no_clip)
+            return
+        }
+
+        val metaJson = JSONObject().apply {
+            put("device_model", "${Build.MANUFACTURER} ${Build.MODEL}")
+            lastRecordingDurationMs?.let { put("recordingDurationMs", it) }
+        }.toString()
+
+        val tag = UploadWorker.enqueue(applicationContext, clipPath, metaJson)
+        binding.tvStatus.text = getString(R.string.status_upload_enqueued)
+
+        val uploadItem = SessionItem(tag, "enqueued", File(clipPath).name)
+        sessions.add(0, uploadItem)
+        renderSessionList()
+
+        pollUploadState(tag, 0)
+    }
+
+    private fun pollUploadState(tag: String, elapsedMs: Int) {
+        if (elapsedMs >= UPLOAD_POLL_MAX_MS) {
+            updateUploadSessionStatus(tag, "timeout")
+            binding.tvStatus.text = getString(R.string.status_upload_failed)
+            return
+        }
+        uploadPollHandler.postDelayed({
+            Thread {
+                val state = UploadWorker.getState(applicationContext, tag)
+                if (uploadPollActive) {
+                    uploadPollHandler.post {
+                        updateUploadSessionStatus(tag, state)
+                        when (state) {
+                            "succeeded" -> binding.tvStatus.text = getString(R.string.status_upload_succeeded)
+                            "failed", "cancelled" -> binding.tvStatus.text = getString(R.string.status_upload_failed)
+                            else -> pollUploadState(tag, elapsedMs + UPLOAD_POLL_INTERVAL_MS)
+                        }
+                    }
+                }
+            }.start()
+        }, UPLOAD_POLL_INTERVAL_MS.toLong())
+    }
+
+    private fun updateUploadSessionStatus(tag: String, status: String) {
+        val idx = sessions.indexOfFirst { it.id == tag }
+        if (idx >= 0) {
+            sessions[idx] = sessions[idx].copy(status = status)
+            renderSessionList()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Chat button
+    // -------------------------------------------------------------------------
+
+    private fun onChatClicked() {
+        startActivity(Intent(this, ChatActivity::class.java))
+    }
+
+    // -------------------------------------------------------------------------
     // Session list rendering
     // -------------------------------------------------------------------------
 
@@ -275,6 +356,8 @@ class MainActivity : AppCompatActivity() {
         private const val ERROR_PREFIX = "Capture failed"
         private const val ERROR_PERMISSION_DENIED = "Screen capture permission denied"
         private const val ERROR_START_FAILED = "Capture failed to start recording."
+        private const val UPLOAD_POLL_INTERVAL_MS = 1_000
+        private const val UPLOAD_POLL_MAX_MS = 60_000
         const val STATUS_SAVED = "saved"
         const val STATUS_FAILED = "failed"
     }

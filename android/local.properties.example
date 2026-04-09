@@ -1,8 +1,12 @@
-# local.properties — copy this file to local.properties and fill in values.
+# local.properties — copy this file to local.properties and fill in your values.
 # DO NOT commit local.properties to source control (it is gitignored by default).
 
-# Full URL of the UI Blueprint backend, e.g. http://192.168.1.100:8000
-BACKEND_BASE_URL=http://10.0.2.2:8000
+# Full URL of the UI Blueprint backend.
+# For the Android emulator pointing at a local server use http://10.0.2.2:8000
+# For the hosted backend use e.g. https://ui-blueprint-backend.onrender.com
+BACKEND_BASE_URL=https://ui-blueprint-backend.onrender.com
 
-# Bearer token that matches the API_KEY on the backend server.
-BACKEND_API_KEY=change-me
+# Bearer token required by the backend API (set via API_KEY on the server).
+# This is the backend service token — it is NOT the OpenAI API key.
+# Leave blank if the backend is running without authentication (dev mode).
+BACKEND_API_KEY=YOUR_API_KEY

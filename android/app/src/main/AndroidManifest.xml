@@ -28,6 +28,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ChatActivity"
+            android:exported="false" />
+
         <!-- Foreground service that runs MediaProjection + MediaRecorder -->
         <service
             android:name=".CaptureService"

@@ -2,9 +2,17 @@
 <resources>
     <string name="app_name">UI Blueprint</string>
     <string name="btn_record">Record 20 s</string>
+    <string name="btn_analyze">Analyze</string>
+    <string name="btn_chat">Chat</string>
+    <string name="btn_send">Send</string>
+    <string name="hint_chat_input">Type a message…</string>
     <string name="status_idle">Ready</string>
     <string name="status_requesting_permission">Requesting permission…</string>
     <string name="status_recording">Recording…</string>
     <string name="status_uploading">Uploading…</string>
+    <string name="status_no_clip">No clip available. Record first.</string>
+    <string name="status_upload_enqueued">Upload enqueued…</string>
+    <string name="status_upload_succeeded">Upload succeeded.</string>
+    <string name="status_upload_failed">Upload failed.</string>
     <string name="label_sessions">Sessions</string>
 </resources>
