@@ -49,6 +49,15 @@
         android:text="@string/status_idle"
         android:textSize="14sp" />
 
+    <TextView
+        android:id="@+id/tvBackendUrl"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textSize="12sp"
+        android:alpha="0.6"
+        tools:text="Backend: https://ui-blueprint-backend.onrender.com" />
+
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"

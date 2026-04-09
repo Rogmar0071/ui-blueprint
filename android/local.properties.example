@@ -1,12 +1,28 @@
 # local.properties — copy this file to local.properties and fill in your values.
 # DO NOT commit local.properties to source control (it is gitignored by default).
 
-# Full URL of the UI Blueprint backend.
-# For the Android emulator pointing at a local server use http://10.0.2.2:8000
-# For the hosted backend use e.g. https://ui-blueprint-backend.onrender.com
+# ─── Backend Base URL ────────────────────────────────────────────────────────
+#
+# OPTION A – Hosted Render backend (default, recommended):
+#   Use this if you are not running a local server.
+#   HTTPS is required; no extra Android config needed.
+#
 BACKEND_BASE_URL=https://ui-blueprint-backend.onrender.com
+#
+# OPTION B – Local backend on the same machine as the emulator (optional):
+#   The Android emulator reaches your host machine via the special alias 10.0.2.2.
+#   HTTP cleartext is only permitted in DEBUG builds (see
+#   android/app/src/debug/res/xml/network_security_config.xml).
+#   Uncomment the line below and comment out the Render URL above to use it.
+#
+# BACKEND_BASE_URL=http://10.0.2.2:8000
+#
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Bearer token required by the backend API (set via API_KEY on the server).
+# ─── Backend API Key ─────────────────────────────────────────────────────────
+#
+# Leave blank (empty string) if the backend does not enforce authentication.
+# Otherwise set this to the API_KEY value configured on the backend server.
 # This is the backend service token — it is NOT the OpenAI API key.
-# Leave blank if the backend is running without authentication (dev mode).
-BACKEND_API_KEY=YOUR_API_KEY
+#
+BACKEND_API_KEY=

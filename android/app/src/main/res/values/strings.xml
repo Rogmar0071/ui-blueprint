@@ -15,4 +15,5 @@
     <string name="status_upload_succeeded">Upload succeeded.</string>
     <string name="status_upload_failed">Upload failed.</string>
     <string name="label_sessions">Sessions</string>
+    <string name="label_backend_url">Backend: %1$s</string>
 </resources>

@@ -98,6 +98,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnRecord.setOnClickListener { onRecordClicked() }
         binding.btnAnalyze.setOnClickListener { onAnalyzeClicked() }
         binding.btnChat.setOnClickListener { onChatClicked() }
+        binding.tvBackendUrl.text = getString(R.string.label_backend_url, BuildConfig.BACKEND_BASE_URL)
         renderSessionList()
         showIdleUi()
     }
