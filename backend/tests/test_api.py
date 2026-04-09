@@ -345,8 +345,9 @@ class TestChat:
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """When OpenAI times out, /api/chat returns 502 ai_provider_error."""
-        import httpx
         from unittest.mock import MagicMock, patch
+
+        import httpx
 
         monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
 

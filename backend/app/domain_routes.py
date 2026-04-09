@@ -11,7 +11,7 @@ POST   /api/domains/derive                       derive draft domain profile can
 GET    /api/domains/{domain_profile_id}          fetch a domain profile                  [public]
 PATCH  /api/domains/{domain_profile_id}          edit a draft profile (409 if not draft) [auth]
 POST   /api/domains/{domain_profile_id}/confirm  confirm a draft profile (409 if not draft) [auth]
-POST   /api/blueprints/compile                   compile blueprint (requires confirmed domain) [auth]
+POST   /api/blueprints/compile                   compile blueprint (confirmed domain req.)    [auth]
 
 All mutating endpoints require ``Authorization: Bearer <API_KEY>``.
 GET is intentionally public so clients can inspect profiles without a key.
@@ -306,7 +306,11 @@ async def patch_domain_profile(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/domains/{domain_profile_id}/confirm", status_code=200, dependencies=[Depends(require_auth)])
+@router.post(
+    "/domains/{domain_profile_id}/confirm",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
 async def confirm_domain_profile(
     domain_profile_id: str, body: dict[str, Any]
 ) -> JSONResponse:

@@ -8,6 +8,15 @@ exposes the results over HTTP.
 
 ## Endpoints
 
+### Public (no auth required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`  | `/` | Service health check |
+| `GET`  | `/api/domains/{domain_profile_id}` | Fetch a domain profile by ID |
+
+### Auth-required (when `API_KEY` is set)
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/sessions` | Upload a clip (`video` MP4 + optional `meta` JSON) |
@@ -15,8 +24,14 @@ exposes the results over HTTP.
 | `GET`  | `/v1/sessions/{id}/blueprint` | Download blueprint JSON |
 | `GET`  | `/v1/sessions/{id}/preview/index` | List preview PNG filenames |
 | `GET`  | `/v1/sessions/{id}/preview/{file}` | Download a preview PNG |
+| `POST` | `/api/domains/derive` | Derive draft domain profile candidates |
+| `PATCH` | `/api/domains/{id}` | Edit a draft profile (409 if not draft) |
+| `POST` | `/api/domains/{id}/confirm` | Confirm a draft profile (409 if not draft) |
+| `POST` | `/api/blueprints/compile` | Compile blueprint (requires confirmed domain) |
+| `POST` | `/api/chat` | Send a message to the UI Blueprint AI assistant |
 
-All endpoints require `Authorization: Bearer <API_KEY>`.
+Auth-required endpoints need `Authorization: Bearer <API_KEY>` header.
+When `API_KEY` is not set, all requests are allowed (dev / open mode).
 
 ---
 
@@ -51,6 +66,29 @@ curl -X POST http://localhost:8000/v1/sessions \
 # Poll status
 curl http://localhost:8000/v1/sessions/<uuid> \
   -H "Authorization: Bearer my-secret"
+```
+
+Derive domain profiles:
+
+```bash
+curl -X POST http://localhost:8000/api/domains/derive \
+  -H "Authorization: Bearer my-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "media": {"media_id": "vid_001", "media_type": "video"},
+    "options": {"hint": "cabinet assembly", "max_candidates": 2}
+  }'
+# → {"schema_version":"v1.1.0","candidates":[...],"warnings":[]}
+```
+
+Chat with the AI assistant:
+
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Authorization: Bearer my-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "How do I compile a blueprint?"}'
+# → {"schema_version":"v1.1.0","reply":"...","tools_available":[...]}
 ```
 
 ---
@@ -143,6 +181,13 @@ To serve over HTTPS, install Nginx + Certbot, configure a proxy_pass to `localho
 
 | Variable | Default | Description |
 |---|---|---|
-| `API_KEY` | *(empty — no auth)* | Bearer token required by all endpoints |
+| `API_KEY` | *(empty — no auth)* | Bearer token required by auth-required endpoints |
 | `DATA_DIR` | `./data` | Root directory for session files |
 | `BACKEND_DISABLE_JOBS` | `0` | Set to `1` to skip background jobs (tests) |
+| `OPENAI_API_KEY` | *(empty — AI disabled)* | Server-side OpenAI credential — enables AI-backed domain derivation and `/api/chat`. **Never returned to clients.** |
+| `OPENAI_MODEL_DOMAIN` | `gpt-4.1-mini` | Model used for domain derivation |
+| `OPENAI_MODEL_CHAT` | `gpt-4.1-mini` | Model used for `/api/chat` |
+| `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI base URL (strip trailing `/v1` if present — added automatically) |
+| `OPENAI_TIMEOUT_SECONDS` | `30` | Request timeout in seconds for OpenAI calls |
+
+> **Port**: Render sets `$PORT` automatically; the server binds `${PORT:-8000}` (defaults to `8000` for local dev).

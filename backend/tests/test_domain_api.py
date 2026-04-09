@@ -31,7 +31,6 @@ import backend.app.domain_routes as _dr  # noqa: E402
 from backend.app.main import app  # noqa: E402
 from ui_blueprint.domain.derivation import StubDomainDerivationProvider  # noqa: E402
 from ui_blueprint.domain.ir import SCHEMA_VERSION  # noqa: E402
-from ui_blueprint.domain.openai_provider import OpenAIProviderError  # noqa: E402
 from ui_blueprint.domain.store import InMemoryDomainProfileStore  # noqa: E402
 
 
