@@ -43,6 +43,8 @@ class MainActivity : AppCompatActivity() {
     private val sessions = mutableListOf<SessionItem>()
     private var lastClipPath: String? = null
     private var lastRecordingDurationMs: Int? = null
+    // Cancellation flag: set false in onPause so in-flight poll threads skip their post-back.
+    @Volatile private var uploadPollActive = false
     private val recordingWatchdogRunnable = Runnable {
         val startedAtMs = captureResultStore.getRecordingStartedAtMs() ?: return@Runnable
         if (recordingCompletionHelper.hasTimedOut(startedAtMs, SystemClock.elapsedRealtime())) {
@@ -102,6 +104,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        uploadPollActive = true
         ContextCompat.registerReceiver(
             this,
             captureReceiver,
@@ -113,6 +116,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        uploadPollActive = false
         watchdogHandler.removeCallbacks(recordingWatchdogRunnable)
         uploadPollHandler.removeCallbacksAndMessages(null)
         unregisterReceiver(captureReceiver)
@@ -302,12 +306,14 @@ class MainActivity : AppCompatActivity() {
         uploadPollHandler.postDelayed({
             Thread {
                 val state = UploadWorker.getState(applicationContext, tag)
-                uploadPollHandler.post {
-                    updateUploadSessionStatus(tag, state)
-                    when (state) {
-                        "succeeded" -> binding.tvStatus.text = getString(R.string.status_upload_succeeded)
-                        "failed", "cancelled" -> binding.tvStatus.text = getString(R.string.status_upload_failed)
-                        else -> pollUploadState(tag, elapsedMs + UPLOAD_POLL_INTERVAL_MS)
+                if (uploadPollActive) {
+                    uploadPollHandler.post {
+                        updateUploadSessionStatus(tag, state)
+                        when (state) {
+                            "succeeded" -> binding.tvStatus.text = getString(R.string.status_upload_succeeded)
+                            "failed", "cancelled" -> binding.tvStatus.text = getString(R.string.status_upload_failed)
+                            else -> pollUploadState(tag, elapsedMs + UPLOAD_POLL_INTERVAL_MS)
+                        }
                     }
                 }
             }.start()
