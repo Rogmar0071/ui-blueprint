@@ -58,8 +58,10 @@ object BackendClient {
         var lastException: IOException? = null
         for (attempt in 1..MAX_ATTEMPTS) {
             if (attempt > 1) {
-                val delay = BACKOFF_DELAYS_MS[attempt - 2]
-                onRetry?.invoke(attempt - 1, MAX_RETRIES)
+                // retryNumber is 1-based: 1 for the first retry, 2 for the second, etc.
+                val retryNumber = attempt - 1
+                val delay = BACKOFF_DELAYS_MS[retryNumber - 1]
+                onRetry?.invoke(retryNumber, MAX_RETRIES)
                 Thread.sleep(delay)
             }
             try {
