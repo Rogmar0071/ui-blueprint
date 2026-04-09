@@ -62,7 +62,12 @@ object BackendClient {
                 val retryNumber = attempt - 1
                 val delay = BACKOFF_DELAYS_MS[retryNumber - 1]
                 onRetry?.invoke(retryNumber, MAX_RETRIES)
-                Thread.sleep(delay)
+                try {
+                    Thread.sleep(delay)
+                } catch (ie: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IOException("Interrupted during retry backoff", ie)
+                }
             }
             try {
                 val response = httpClient.newCall(request).execute()
