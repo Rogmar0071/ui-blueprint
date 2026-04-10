@@ -41,4 +41,6 @@
     <string name="folder_no_jobs">No jobs yet.</string>
     <string name="folder_no_artifacts">No artifacts yet.</string>
     <string name="folder_chat_retrying">(Retrying %1$d/%2$d…)</string>
+    <string name="status_analyze_queued">Analyze queued…</string>
+    <string name="status_analyzing">Analyzing… %1$d%%</string>
 </resources>

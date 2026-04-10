@@ -523,6 +523,79 @@ class TestJobs:
         resp = client.post(f"/v1/folders/{uuid.uuid4()}/jobs", json={"type": "analyze"})
         assert resp.status_code == 401
 
+    def test_duplicate_analyze_job_returns_409(self, client: TestClient) -> None:
+        """Second analyze job is rejected when one is already queued/running."""
+        folder = _create_folder(client)
+        fid = folder["id"]
+        resp1 = client.post(
+            f"/v1/folders/{fid}/jobs",
+            json={"type": "analyze"},
+            headers=_auth(),
+        )
+        assert resp1.status_code == 202
+        resp2 = client.post(
+            f"/v1/folders/{fid}/jobs",
+            json={"type": "analyze"},
+            headers=_auth(),
+        )
+        assert resp2.status_code == 409
+        assert "queued or running" in resp2.json()["detail"]
+
+    def test_duplicate_blueprint_job_returns_409(self, client: TestClient) -> None:
+        """Second blueprint job is rejected when one is already queued/running."""
+        folder = _create_folder(client)
+        fid = folder["id"]
+        resp1 = client.post(
+            f"/v1/folders/{fid}/jobs",
+            json={"type": "blueprint"},
+            headers=_auth(),
+        )
+        assert resp1.status_code == 202
+        resp2 = client.post(
+            f"/v1/folders/{fid}/jobs",
+            json={"type": "blueprint"},
+            headers=_auth(),
+        )
+        assert resp2.status_code == 409
+
+    def test_upload_clip_reuses_existing_analyze_job(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """
+        When an analyze job is already queued for a folder, a subsequent clip
+        upload must reuse that job rather than creating a second one.
+        """
+        for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+            monkeypatch.delenv(k, raising=False)
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+
+        # Enqueue an analyze job manually.
+        resp1 = client.post(
+            f"/v1/folders/{fid}/jobs",
+            json={"type": "analyze"},
+            headers=_auth(),
+        )
+        assert resp1.status_code == 202
+        first_job_id = resp1.json()["job"]["id"]
+
+        # Upload a clip – should reuse the existing queued job.
+        resp2 = client.post(
+            f"/v1/folders/{fid}/clip",
+            files={"clip": ("test.mp4", b"\x00\x01", "video/mp4")},
+            headers=_auth(),
+        )
+        assert resp2.status_code == 202
+        body = resp2.json()
+        assert body["job"]["id"] == first_job_id, (
+            "upload_clip should reuse the existing queued analyze job"
+        )
+
+        # Verify only one job exists.
+        jobs_resp = client.get(f"/v1/folders/{fid}/jobs", headers=_auth())
+        assert len(jobs_resp.json()["jobs"]) == 1
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/folders/{id}/artifacts/{artifact_id}  — no R2 configured

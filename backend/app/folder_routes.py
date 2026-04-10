@@ -312,20 +312,33 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
     folder.updated_at = datetime.now(timezone.utc)
     db.add(folder)
 
-    # Create job row.
-    job = Job(folder_id=fid, type="analyze")
-    db.add(job)
-    db.commit()
-    db.refresh(job)
+    # Create analyze job only when there is no active one for this folder.
+    from sqlmodel import select
 
-    # Enqueue / run job.
-    job_id_str = str(job.id)
-    rq_id = worker.enqueue_job(job_id_str, "analyze")
-    if rq_id:
-        job.rq_job_id = rq_id
+    existing_job = db.exec(
+        select(Job)
+        .where(Job.folder_id == fid)
+        .where(Job.type == "analyze")
+        .where(Job.status.in_(["queued", "running"]))
+    ).first()
+
+    if existing_job is None:
+        # Create job row.
+        job = Job(folder_id=fid, type="analyze")
         db.add(job)
         db.commit()
         db.refresh(job)
+
+        # Enqueue / run job.
+        job_id_str = str(job.id)
+        rq_id = worker.enqueue_job(job_id_str, "analyze")
+        if rq_id:
+            job.rq_job_id = rq_id
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+    else:
+        job = existing_job
 
     return JSONResponse(
         content={
@@ -666,6 +679,22 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
             status_code=400,
             detail="type must be 'analyze' or 'blueprint'",
         )
+
+    # Reject duplicate active analyze/blueprint jobs for the same folder.
+    if job_type in ("analyze", "blueprint"):
+        from sqlmodel import select
+
+        existing = db.exec(
+            select(Job)
+            .where(Job.folder_id == fid)
+            .where(Job.type == job_type)
+            .where(Job.status.in_(["queued", "running"]))
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A {job_type} job is already queued or running for this folder.",
+            )
 
     job = Job(folder_id=fid, type=job_type)
     db.add(job)

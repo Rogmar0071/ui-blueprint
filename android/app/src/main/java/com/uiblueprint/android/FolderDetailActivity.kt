@@ -65,6 +65,20 @@ class FolderDetailActivity : AppCompatActivity() {
     private var lastRecordingDurationMs: Int? = null
     private var lastGalleryUri: Uri? = null
 
+    // Polling for job progress after upload / when active job detected.
+    private val pollHandler = Handler(Looper.getMainLooper())
+    private var pollCount = 0
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            if (pollCount >= POLL_MAX_COUNT) {
+                stopPolling()
+                return
+            }
+            pollCount++
+            loadFolder()
+        }
+    }
+
     // MediaProjection permission launcher.
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -159,11 +173,13 @@ class FolderDetailActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         watchdogHandler.removeCallbacks(recordingWatchdogRunnable)
+        stopPolling()
         unregisterReceiver(captureReceiver)
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopPolling()
         executor.shutdownNow()
         clipUploadExecutor.shutdownNow()
     }
@@ -335,11 +351,11 @@ class FolderDetailActivity : AppCompatActivity() {
 
                 runOnUiThread {
                     lastGalleryUri = uri
-                    binding.btnAnalyze.isEnabled = true
-                    setActionStatus(null)
+                    binding.btnAnalyze.isEnabled = false
+                    setActionStatus(getString(R.string.status_analyze_queued))
                     binding.tvFolderStatus.text = getString(R.string.label_folder_status, "queued")
                     Toast.makeText(this, getString(R.string.status_upload_succeeded), Toast.LENGTH_SHORT).show()
-                    loadFolder()
+                    startPolling()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -390,11 +406,12 @@ class FolderDetailActivity : AppCompatActivity() {
                 }
 
                 runOnUiThread {
-                    setActionStatus(null)
-                    resetActionButtons()
+                    binding.btnRecord.isEnabled = true
+                    binding.btnAnalyze.isEnabled = false
+                    setActionStatus(getString(R.string.status_analyze_queued))
                     binding.tvFolderStatus.text = getString(R.string.label_folder_status, "queued")
                     Toast.makeText(this, getString(R.string.status_upload_succeeded), Toast.LENGTH_SHORT).show()
-                    loadFolder()
+                    startPolling()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -441,12 +458,55 @@ class FolderDetailActivity : AppCompatActivity() {
     // -------------------------------------------------------------------------
 
     private fun onAnalyzeClicked() {
-        val clipPath = lastClipPath
-        val galleryUri = lastGalleryUri
-        when {
-            clipPath != null -> uploadClipFromFile(File(clipPath), lastRecordingDurationMs)
-            galleryUri != null -> uploadClipFromUri(galleryUri)
-            else -> Toast.makeText(this, getString(R.string.status_no_clip), Toast.LENGTH_SHORT).show()
+        binding.btnAnalyze.isEnabled = false
+        setActionStatus(getString(R.string.status_analyze_queued))
+
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+
+        val bodyJson = JSONObject().put("type", "analyze").toString()
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId/jobs")
+            .post(bodyJson.toRequestBody("application/json".toMediaType()))
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        executor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        when {
+                            resp.isSuccessful -> {
+                                Toast.makeText(
+                                    this,
+                                    getString(R.string.status_analyze_queued),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                                startPolling()
+                            }
+                            resp.code == 409 -> {
+                                // Already queued/running — just start polling to show progress.
+                                startPolling()
+                            }
+                            else -> {
+                                binding.btnAnalyze.isEnabled = true
+                                setActionStatus(null)
+                                Toast.makeText(
+                                    this,
+                                    "Analyze failed: HTTP ${resp.code}",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        }
+                    }
+                }
+            } catch (e: IOException) {
+                runOnUiThread {
+                    binding.btnAnalyze.isEnabled = true
+                    setActionStatus(null)
+                    Toast.makeText(this, "Analyze failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -466,6 +526,20 @@ class FolderDetailActivity : AppCompatActivity() {
     private fun resetActionButtons() {
         binding.btnRecord.isEnabled = true
         setActionStatus(null)
+    }
+
+    // -------------------------------------------------------------------------
+    // Polling helpers
+    // -------------------------------------------------------------------------
+
+    private fun startPolling() {
+        pollCount = 0
+        pollHandler.removeCallbacks(pollRunnable)
+        pollHandler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
+    }
+
+    private fun stopPolling() {
+        pollHandler.removeCallbacks(pollRunnable)
     }
 
     // -------------------------------------------------------------------------
@@ -526,6 +600,38 @@ class FolderDetailActivity : AppCompatActivity() {
                     )
                 }
             }.trim()
+        }
+
+        // Check for an active (queued/running) analyze job.
+        val activeAnalyzeJob = (0 until (jobs?.length() ?: 0))
+            .map { jobs!!.getJSONObject(it) }
+            .firstOrNull { j ->
+                j.optString("type") == "analyze" &&
+                    j.optString("status") in listOf("queued", "running")
+            }
+
+        if (activeAnalyzeJob != null) {
+            // Disable Analyze button and show live status.
+            binding.btnAnalyze.isEnabled = false
+            val status = activeAnalyzeJob.optString("status")
+            val progress = activeAnalyzeJob.optInt("progress")
+            val statusMsg = if (status == "running") {
+                getString(R.string.status_analyzing, progress)
+            } else {
+                getString(R.string.status_analyze_queued)
+            }
+            setActionStatus(statusMsg)
+            // Continue polling while job is active.
+            pollHandler.removeCallbacks(pollRunnable)
+            pollHandler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
+        } else {
+            // No active analyze job: enable Analyze if folder has a clip.
+            val hasClip = json.optString("clip_object_key", "").isNotEmpty()
+            binding.btnAnalyze.isEnabled = hasClip
+            if (hasClip) {
+                setActionStatus(null)
+            }
+            stopPolling()
         }
 
         // Artifacts
@@ -658,5 +764,7 @@ class FolderDetailActivity : AppCompatActivity() {
         private const val RECORDING_TIMEOUT_MS = 30_000L
         private const val ERROR_PERMISSION_DENIED = "Screen capture permission denied"
         private const val ERROR_START_FAILED = "Capture failed to start recording."
+        private const val POLL_INTERVAL_MS = 2_000L
+        private const val POLL_MAX_COUNT = 150 // 2 s × 150 = 5 minutes max
     }
 }
