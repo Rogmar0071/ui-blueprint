@@ -67,6 +67,7 @@ dependencies {
     implementation(libs.constraintlayout)
     implementation(libs.work.runtime.ktx)
     implementation(libs.okhttp)
+    implementation(libs.recyclerview)
     implementation(libs.lifecycle.viewmodel.ktx)
 
     testImplementation(libs.junit)

@@ -2,10 +2,13 @@ package com.uiblueprint.android
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.MenuItem
 import android.view.View
-import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.ActionBarDrawerToggle
 import androidx.appcompat.app.AppCompatActivity
+import androidx.drawerlayout.widget.DrawerLayout
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.uiblueprint.android.databinding.ActivityMainBinding
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -19,9 +22,10 @@ import java.util.concurrent.Executors
  * Main (Home) screen.
  *
  * Shows:
- *  - A "New Project" button that creates an empty project/folder and opens it.
- *  - A list of existing projects (tappable → opens FolderDetailActivity).
- *  - A global chat panel that takes the majority of the screen.
+ *  - A hamburger-icon AppBar that opens the Projects drawer.
+ *  - A left-side drawer (~half screen, min 320dp) listing all projects fetched
+ *    from GET /v1/folders via a scrollable RecyclerView, plus a "New Project" button.
+ *  - Main area: global chat panel.
  *
  * All recording, gallery-pick, and analyze actions have been moved to
  * FolderDetailActivity so that each clip is automatically associated with a project.
@@ -29,9 +33,8 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-
-    // Folder items created on this screen or fetched from backend
-    private val folderItems = mutableListOf<FolderItem>()
+    private lateinit var drawerToggle: ActionBarDrawerToggle
+    private val folderAdapter = FolderAdapter()
 
     private val chatExecutor = Executors.newSingleThreadExecutor { Thread(it, "GlobalChat-worker") }
     private val projectExecutor = Executors.newSingleThreadExecutor { Thread(it, "NewProject-worker") }
@@ -41,17 +44,117 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        setupDrawer()
+        setupFolderList()
+
         binding.btnNewProject.setOnClickListener { onNewProjectClicked() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.tvBackendUrl.text = getString(R.string.label_backend_url, BuildConfig.BACKEND_BASE_URL)
 
+        loadFolders()
         loadGlobalChat()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        loadFolders()
+    }
+
+    override fun onPostCreate(savedInstanceState: Bundle?) {
+        super.onPostCreate(savedInstanceState)
+        drawerToggle.syncState()
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (drawerToggle.onOptionsItemSelected(item)) return true
+        return super.onOptionsItemSelected(item)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         chatExecutor.shutdownNow()
         projectExecutor.shutdownNow()
+    }
+
+    // -------------------------------------------------------------------------
+    // Drawer setup
+    // -------------------------------------------------------------------------
+
+    private fun setupDrawer() {
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        supportActionBar?.setHomeButtonEnabled(true)
+
+        drawerToggle = ActionBarDrawerToggle(
+            this,
+            binding.drawerLayout,
+            R.string.drawer_open,
+            R.string.drawer_close,
+        )
+        binding.drawerLayout.addDrawerListener(drawerToggle)
+
+        // Adjust drawer width: at least drawer_min_width, or half the screen on wider devices.
+        val screenWidth = resources.displayMetrics.widthPixels
+        val minWidthPx = resources.getDimensionPixelSize(R.dimen.drawer_min_width)
+        val targetWidthPx = maxOf(minWidthPx, screenWidth / 2)
+        val drawerParams = binding.drawerPanel.layoutParams as DrawerLayout.LayoutParams
+        drawerParams.width = targetWidthPx
+        binding.drawerPanel.layoutParams = drawerParams
+    }
+
+    // -------------------------------------------------------------------------
+    // Folder/Project list (RecyclerView in drawer)
+    // -------------------------------------------------------------------------
+
+    private fun setupFolderList() {
+        binding.rvFolders.layoutManager = LinearLayoutManager(this)
+        binding.rvFolders.adapter = folderAdapter
+    }
+
+    private fun loadFolders() {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders")
+            .get()
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        projectExecutor.execute {
+            try {
+                val response = BackendClient.executeWithRetry(request)
+                response.use { resp ->
+                    val bodyStr = resp.body?.string() ?: ""
+                    if (resp.isSuccessful) {
+                        val foldersArray = runCatching {
+                            JSONObject(bodyStr).getJSONArray("folders")
+                        }.getOrNull() ?: JSONArray()
+                        val items = parseFolderItems(foldersArray)
+                        runOnUiThread {
+                            folderAdapter.submitList(items)
+                            binding.tvProjectsEmpty.visibility =
+                                if (items.isEmpty()) View.VISIBLE else View.GONE
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                // Best-effort: keep whatever is currently shown.
+            }
+        }
+    }
+
+    private fun parseFolderItems(array: JSONArray): List<FolderItem> {
+        val result = mutableListOf<FolderItem>()
+        for (i in 0 until array.length()) {
+            val obj = array.getJSONObject(i)
+            val id = obj.optString("id")
+            if (id.isBlank()) continue
+            val title = obj.optString("title", "")
+            val status = obj.optString("status", "")
+            val label = if (title.isNotBlank()) title else "Project ${id.take(8)}"
+            result.add(FolderItem(id, status, label))
+        }
+        return result
     }
 
     // -------------------------------------------------------------------------
@@ -74,15 +177,22 @@ class MainActivity : AppCompatActivity() {
         projectExecutor.execute {
             try {
                 val response = BackendClient.executeWithRetry(request)
-                val folderId = response.use { resp ->
+                val folderJson = response.use { resp ->
                     if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-                    JSONObject(resp.body?.string() ?: "{}").getString("id")
+                    JSONObject(resp.body?.string() ?: "{}")
                 }
+                val folderId = folderJson.getString("id")
+                val title = folderJson.optString("title", "")
+                val label = if (title.isNotBlank()) title else "Project ${folderId.take(8)}"
+                val newItem = FolderItem(folderId, "new", label)
 
                 runOnUiThread {
                     binding.tvStatus.text = getString(R.string.status_idle)
                     binding.btnNewProject.isEnabled = true
-                    addFolderItem(FolderItem(folderId, "new", "Project"))
+                    // Insert at top of list immediately; onResume will reload from server.
+                    folderAdapter.prependIfAbsent(newItem)
+                    binding.tvProjectsEmpty.visibility = View.GONE
+                    binding.drawerLayout.closeDrawers()
                     val intent = Intent(this, FolderDetailActivity::class.java)
                     intent.putExtra(FolderDetailActivity.EXTRA_FOLDER_ID, folderId)
                     startActivity(intent)
@@ -228,36 +338,6 @@ class MainActivity : AppCompatActivity() {
     private fun scrollChatToBottom() {
         binding.scrollChat.post {
             binding.scrollChat.fullScroll(View.FOCUS_DOWN)
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Folder/Project items list
-    // -------------------------------------------------------------------------
-
-    private fun addFolderItem(item: FolderItem) {
-        folderItems.add(0, item)
-        renderFolderList()
-    }
-
-    private fun renderFolderList() {
-        val container = binding.llFolderList
-        container.removeAllViews()
-        for (item in folderItems) {
-            val tv = TextView(this).apply {
-                text = "📁 ${item.label}  [${item.status}]"
-                textSize = 12f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setPadding(0, 4, 0, 4)
-                isClickable = true
-                isFocusable = true
-                setOnClickListener {
-                    val intent = Intent(this@MainActivity, FolderDetailActivity::class.java)
-                    intent.putExtra(FolderDetailActivity.EXTRA_FOLDER_ID, item.id)
-                    startActivity(intent)
-                }
-            }
-            container.addView(tv)
         }
     }
 

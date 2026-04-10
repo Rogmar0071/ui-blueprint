@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Minimum width of the Projects drawer. On wide screens the drawer may
+         expand to half the screen width; this value is the floor. -->
+    <dimen name="drawer_min_width">320dp</dimen>
+</resources>

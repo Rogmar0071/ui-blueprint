@@ -8,6 +8,7 @@ constraintlayout = "2.1.4"
 workRuntime = "2.9.0"
 okhttp = "4.12.0"
 room = "2.6.1"
+recyclerview = "1.3.2"
 lifecycleViewModel = "2.8.2"
 junit = "4.13.2"
 junitVersion = "1.2.1"
@@ -22,6 +23,7 @@ work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+recyclerview = { group = "androidx.recyclerview", name = "recyclerview", version.ref = "recyclerview" }
 lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycleViewModel" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

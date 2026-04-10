@@ -19,6 +19,10 @@
     <string name="status_gallery_creating_folder">Creating folder…</string>
     <string name="status_gallery_uploading_clip">Uploading clip…</string>
     <string name="label_sessions">Folders</string>
+    <string name="label_projects">Projects</string>
+    <string name="label_projects_empty">No projects yet.</string>
+    <string name="drawer_open">Open projects drawer</string>
+    <string name="drawer_close">Close projects drawer</string>
     <string name="label_backend_url">Backend: %1$s</string>
     <string name="btn_new_project">New Project</string>
     <string name="status_saved_to_gallery">Clip saved to Gallery</string>
