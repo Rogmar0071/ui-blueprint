@@ -76,6 +76,61 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="@string/label_global_chat"
+        android:textStyle="bold"
+        android:textSize="14sp"
+        android:layout_marginBottom="8dp" />
+
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/scrollChat"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="2"
+        android:minHeight="120dp"
+        android:fillViewport="true"
+        android:layout_marginBottom="4dp">
+
+        <TextView
+            android:id="@+id/tvChatLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="12sp" />
+    </androidx.core.widget.NestedScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
+
+        <EditText
+            android:id="@+id/etMessage"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="@string/hint_chat_input"
+            android:inputType="textMultiLine"
+            android:maxLines="3"
+            android:layout_marginEnd="8dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSend"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_send" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginVertical="16dp"
+        android:background="?attr/colorOnSurface"
+        android:alpha="0.12" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:text="@string/label_sessions"
         android:textStyle="bold"
         android:textSize="14sp"

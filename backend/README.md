@@ -113,6 +113,18 @@ curl -X POST http://localhost:8000/api/chat \
 
 ---
 
+## Render deployment
+
+When deploying to Render as a Docker service:
+
+- **Pre-Deploy Command**: leave blank (Render cannot reliably parse complex shell syntax in this field).
+- **Docker Command**: `bash backend/entrypoint.sh`
+
+The entrypoint script runs Alembic migrations then starts Uvicorn with `exec`.
+`$PORT` is set automatically by Render; the script defaults to `8000` when running locally.
+
+---
+
 ## Oracle Free Tier deployment
 
 These steps assume a fresh **Oracle Linux 8** (or Ubuntu 22.04) VM with 1 OCPU / 1 GB RAM from the Oracle Always-Free tier.

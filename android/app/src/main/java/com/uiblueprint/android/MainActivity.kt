@@ -27,6 +27,7 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
 import okio.source
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -62,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     // Cancellation flag: set false in onPause so in-flight poll threads skip their post-back.
     @Volatile private var uploadPollActive = false
     private val galleryExecutor = Executors.newSingleThreadExecutor { Thread(it, "GalleryUpload") }
+    private val chatExecutor = Executors.newSingleThreadExecutor { Thread(it, "GlobalChat-worker") }
     private val recordingWatchdogRunnable = Runnable {
         val startedAtMs = captureResultStore.getRecordingStartedAtMs() ?: return@Runnable
         if (recordingCompletionHelper.hasTimedOut(startedAtMs, SystemClock.elapsedRealtime())) {
@@ -127,9 +129,11 @@ class MainActivity : AppCompatActivity() {
         binding.btnAnalyze.setOnClickListener { onAnalyzeClicked() }
         binding.btnChat.setOnClickListener { onChatClicked() }
         binding.btnPickGallery.setOnClickListener { onPickGalleryClicked() }
+        binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.tvBackendUrl.text = getString(R.string.label_backend_url, BuildConfig.BACKEND_BASE_URL)
         renderSessionList()
         showIdleUi()
+        loadGlobalChat()
     }
 
     override fun onResume() {
@@ -150,6 +154,12 @@ class MainActivity : AppCompatActivity() {
         watchdogHandler.removeCallbacks(recordingWatchdogRunnable)
         uploadPollHandler.removeCallbacksAndMessages(null)
         unregisterReceiver(captureReceiver)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        chatExecutor.shutdownNow()
+        galleryExecutor.shutdownNow()
     }
 
     // -------------------------------------------------------------------------
@@ -482,6 +492,136 @@ class MainActivity : AppCompatActivity() {
 
     private fun onChatClicked() {
         startActivity(Intent(this, ChatActivity::class.java))
+    }
+
+    // -------------------------------------------------------------------------
+    // Global chat (embedded panel)
+    // -------------------------------------------------------------------------
+
+    private fun loadGlobalChat() {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat")
+            .get()
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        chatExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            val messages = runCatching {
+                                JSONObject(body).getJSONArray("messages")
+                            }.getOrNull()
+                            renderChatMessages(messages)
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                // Best-effort: keep whatever is currently shown.
+            }
+        }
+    }
+
+    private fun onChatSendClicked() {
+        val message = binding.etMessage.text.toString().trim()
+        if (message.isBlank()) return
+
+        binding.etMessage.setText("")
+        binding.btnSend.isEnabled = false
+
+        val bodyJson = JSONObject().apply {
+            put("message", message)
+            put(
+                "context",
+                JSONObject().apply {
+                    put("session_id", JSONObject.NULL)
+                    put("domain_profile_id", JSONObject.NULL)
+                },
+            )
+        }.toString()
+
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat")
+            .post(bodyJson.toRequestBody("application/json".toMediaType()))
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        chatExecutor.execute {
+            try {
+                val response = BackendClient.executeWithRetry(request) { attempt, total ->
+                    runOnUiThread {
+                        appendChatLine(getString(R.string.status_chat_retrying, attempt, total))
+                    }
+                }
+                response.use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    runOnUiThread {
+                        when {
+                            resp.code == 401 || resp.code == 403 ->
+                                appendChatLine("Unauthorized: check BACKEND_API_KEY")
+                            !resp.isSuccessful ->
+                                appendChatLine("Error: HTTP ${resp.code}")
+                            else -> {
+                                val responseJson = runCatching { JSONObject(body) }.getOrNull()
+                                val userMessage = runCatching {
+                                    responseJson?.getJSONObject("user_message")?.getString("content")
+                                }.getOrNull()
+                                val reply = runCatching {
+                                    responseJson?.getJSONObject("assistant_message")?.getString("content")
+                                }.getOrElse { "Error: unexpected response format" }
+                                if (!userMessage.isNullOrBlank()) appendChatLine("You: $userMessage")
+                                appendChatLine("AI: $reply")
+                            }
+                        }
+                        binding.btnSend.isEnabled = true
+                    }
+                }
+            } catch (e: IOException) {
+                runOnUiThread {
+                    appendChatLine("Error: ${e.message ?: "Network error"}")
+                    binding.btnSend.isEnabled = true
+                }
+            }
+        }
+    }
+
+    private fun renderChatMessages(messages: JSONArray?) {
+        if (messages == null || messages.length() == 0) {
+            scrollChatToBottom()
+            return
+        }
+        val lines = buildString {
+            for (i in 0 until messages.length()) {
+                val msg = messages.getJSONObject(i)
+                val prefix = if (msg.optString("role") == "user") "You" else "AI"
+                if (i > 0) append('\n')
+                append(prefix)
+                append(": ")
+                append(msg.optString("content"))
+            }
+        }
+        binding.tvChatLog.text = lines
+        scrollChatToBottom()
+    }
+
+    private fun appendChatLine(line: String) {
+        val current = binding.tvChatLog.text
+        binding.tvChatLog.text = if (current.isNullOrEmpty()) line else "$current\n$line"
+        scrollChatToBottom()
+    }
+
+    private fun scrollChatToBottom() {
+        binding.scrollChat.post {
+            binding.scrollChat.fullScroll(View.FOCUS_DOWN)
+        }
     }
 
     // -------------------------------------------------------------------------
