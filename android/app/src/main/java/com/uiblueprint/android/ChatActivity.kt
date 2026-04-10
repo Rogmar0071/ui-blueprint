@@ -122,13 +122,23 @@ class ChatActivity : AppCompatActivity() {
                             !resp.isSuccessful ->
                                 appendLine("Error: HTTP ${resp.code}")
                             else -> {
-                                val reply = runCatching {
+                                val responseJson = runCatching {
                                     JSONObject(body)
+                                }.getOrNull()
+                                val userMessage = runCatching {
+                                    responseJson
+                                        ?.getJSONObject("user_message")
+                                        ?.getString("content")
+                                }.getOrNull()
+                                val reply = runCatching {
+                                    responseJson
                                         .getJSONObject("assistant_message")
                                         .getString("content")
                                 }.getOrElse { "Error: unexpected response format" }
+                                if (!userMessage.isNullOrBlank()) {
+                                    appendLine("You: $userMessage")
+                                }
                                 appendLine("AI: $reply")
-                                loadMessages()
                             }
                         }
                         binding.btnSend.isEnabled = true
