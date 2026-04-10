@@ -132,8 +132,8 @@ class ChatActivity : AppCompatActivity() {
                                 }.getOrNull()
                                 val reply = runCatching {
                                     responseJson
-                                        .getJSONObject("assistant_message")
-                                        .getString("content")
+                                        ?.getJSONObject("assistant_message")
+                                        ?.getString("content")
                                 }.getOrElse { "Error: unexpected response format" }
                                 if (!userMessage.isNullOrBlank()) {
                                     appendLine("You: $userMessage")
