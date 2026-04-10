@@ -538,6 +538,11 @@ class FolderDetailActivity : AppCompatActivity() {
         pollHandler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
     }
 
+    private fun scheduleNextPoll() {
+        pollHandler.removeCallbacks(pollRunnable)
+        pollHandler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
+    }
+
     private fun stopPolling() {
         pollHandler.removeCallbacks(pollRunnable)
     }
@@ -622,8 +627,7 @@ class FolderDetailActivity : AppCompatActivity() {
             }
             setActionStatus(statusMsg)
             // Continue polling while job is active.
-            pollHandler.removeCallbacks(pollRunnable)
-            pollHandler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
+            scheduleNextPoll()
         } else {
             // No active analyze job: enable Analyze if folder has a clip.
             val hasClip = json.optString("clip_object_key", "").isNotEmpty()
