@@ -30,6 +30,8 @@
     <string name="label_global_chat">Global Chat</string>
     <string name="status_creating_project">Creating project…</string>
     <!-- FolderDetailActivity strings -->
+    <string name="btn_analyze_queued">Analyze queued…</string>
+    <string name="btn_analyze_running">Analyzing…</string>
     <string name="folder_detail_title">Folder</string>
     <string name="label_folder_status">Status: %1$s</string>
     <string name="label_folder_id">ID: %1$s</string>

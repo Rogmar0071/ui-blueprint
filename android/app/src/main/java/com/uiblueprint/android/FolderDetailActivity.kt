@@ -59,6 +59,13 @@ class FolderDetailActivity : AppCompatActivity() {
     private val clipUploadExecutor = Executors.newSingleThreadExecutor { Thread(it, "ClipUpload-worker") }
 
     private val watchdogHandler = Handler(Looper.getMainLooper())
+    private val pollHandler = Handler(Looper.getMainLooper())
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            loadFolder()
+            pollHandler.postDelayed(this, POLL_INTERVAL_MS)
+        }
+    }
     private val recordingCompletionHelper = RecordingCompletionHelper(RECORDING_TIMEOUT_MS)
 
     private var lastClipPath: String? = null
@@ -154,16 +161,21 @@ class FolderDetailActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         recoverPendingCaptureState()
+        // Refresh folder state on resume; renderFolder() will restart polling
+        // if there is still an active analyze job.
+        loadFolder()
     }
 
     override fun onPause() {
         super.onPause()
         watchdogHandler.removeCallbacks(recordingWatchdogRunnable)
+        stopPolling()
         unregisterReceiver(captureReceiver)
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopPolling()
         executor.shutdownNow()
         clipUploadExecutor.shutdownNow()
     }
@@ -238,7 +250,8 @@ class FolderDetailActivity : AppCompatActivity() {
     private fun onCaptureDone(clip: File, recordingDurationMs: Int?) {
         lastClipPath = clip.absolutePath
         lastRecordingDurationMs = recordingDurationMs
-        binding.btnAnalyze.isEnabled = true
+        // Do NOT enable Analyze here — uploadClipFromFile() will auto-queue
+        // an analyze job on the backend, so polling will track progress.
 
         // Save clip to gallery
         when (val result = MediaStoreVideoSaver.saveClipToGallery(applicationContext, clip)) {
@@ -335,11 +348,14 @@ class FolderDetailActivity : AppCompatActivity() {
 
                 runOnUiThread {
                     lastGalleryUri = uri
-                    binding.btnAnalyze.isEnabled = true
+                    // Do NOT enable Analyze — upload already enqueued an analyze
+                    // job on the backend. Polling will reflect progress and re-enable
+                    // the button only after the job finishes.
                     setActionStatus(null)
                     binding.tvFolderStatus.text = getString(R.string.label_folder_status, "queued")
                     Toast.makeText(this, getString(R.string.status_upload_succeeded), Toast.LENGTH_SHORT).show()
                     loadFolder()
+                    startPolling()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -395,6 +411,7 @@ class FolderDetailActivity : AppCompatActivity() {
                     binding.tvFolderStatus.text = getString(R.string.label_folder_status, "queued")
                     Toast.makeText(this, getString(R.string.status_upload_succeeded), Toast.LENGTH_SHORT).show()
                     loadFolder()
+                    startPolling()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -441,6 +458,8 @@ class FolderDetailActivity : AppCompatActivity() {
     // -------------------------------------------------------------------------
 
     private fun onAnalyzeClicked() {
+        // Safety guard: the button should already be disabled when a job is active,
+        // but double-check here to prevent duplicate uploads / duplicate analyze jobs.
         val clipPath = lastClipPath
         val galleryUri = lastGalleryUri
         when {
@@ -466,6 +485,28 @@ class FolderDetailActivity : AppCompatActivity() {
     private fun resetActionButtons() {
         binding.btnRecord.isEnabled = true
         setActionStatus(null)
+    }
+
+    private fun startPolling() {
+        pollHandler.removeCallbacks(pollRunnable)
+        pollHandler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
+    }
+
+    private fun stopPolling() {
+        pollHandler.removeCallbacks(pollRunnable)
+    }
+
+    private fun hasActiveAnalyzeJob(jobs: JSONArray?): Boolean {
+        if (jobs == null) return false
+        for (i in 0 until jobs.length()) {
+            val job = jobs.getJSONObject(i)
+            if (job.optString("type") == "analyze" &&
+                job.optString("status") in setOf("queued", "running")
+            ) {
+                return true
+            }
+        }
+        return false
     }
 
     // -------------------------------------------------------------------------
@@ -539,6 +580,32 @@ class FolderDetailActivity : AppCompatActivity() {
                     appendLine("• ${a.optString("type")}")
                 }
             }.trim()
+        }
+
+        // Manage Analyze button state and polling based on active analyze jobs.
+        val hasActiveJob = hasActiveAnalyzeJob(jobs)
+        if (hasActiveJob) {
+            // Determine the most descriptive label from the latest analyze job status.
+            val latestStatus = run {
+                for (i in 0 until (jobs?.length() ?: 0)) {
+                    val job = jobs!!.getJSONObject(i)
+                    if (job.optString("type") == "analyze") return@run job.optString("status")
+                }
+                "queued"
+            }
+            binding.btnAnalyze.isEnabled = false
+            binding.btnAnalyze.text = if (latestStatus == "running") {
+                getString(R.string.btn_analyze_running)
+            } else {
+                getString(R.string.btn_analyze_queued)
+            }
+            startPolling()
+        } else {
+            stopPolling()
+            // Re-enable Analyze (for re-run) only when the user has a clip in this session.
+            val hasClip = lastClipPath != null || lastGalleryUri != null
+            binding.btnAnalyze.isEnabled = hasClip
+            binding.btnAnalyze.text = getString(R.string.btn_analyze)
         }
     }
 
@@ -656,6 +723,7 @@ class FolderDetailActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_FOLDER_ID = "folder_id"
         private const val RECORDING_TIMEOUT_MS = 30_000L
+        private const val POLL_INTERVAL_MS = 2_000L
         private const val ERROR_PERMISSION_DENIED = "Screen capture permission denied"
         private const val ERROR_START_FAILED = "Capture failed to start recording."
     }
