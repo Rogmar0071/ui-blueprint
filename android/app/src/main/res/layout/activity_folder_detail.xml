@@ -32,8 +32,53 @@
         android:textSize="11sp"
         android:alpha="0.6"
         android:fontFamily="monospace"
-        android:layout_marginBottom="12dp"
+        android:layout_marginBottom="8dp"
         tools:text="ID: 00000000-…" />
+
+    <!-- Action buttons for this project -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="4dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnRecord"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/btn_record"
+            android:textSize="12sp"
+            android:layout_marginEnd="4dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnPickGallery"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/btn_pick_gallery"
+            android:textSize="12sp"
+            android:layout_marginEnd="4dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnAnalyze"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/btn_analyze"
+            android:textSize="12sp"
+            android:enabled="false" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvActionStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="12sp"
+        android:alpha="0.7"
+        android:layout_marginBottom="8dp"
+        android:visibility="gone"
+        tools:text="Recording…" />
 
     <View
         android:layout_width="match_parent"

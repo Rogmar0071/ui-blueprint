@@ -20,8 +20,11 @@
     <string name="status_gallery_uploading_clip">Uploading clip…</string>
     <string name="label_sessions">Folders</string>
     <string name="label_backend_url">Backend: %1$s</string>
+    <string name="btn_new_project">New Project</string>
+    <string name="status_saved_to_gallery">Clip saved to Gallery</string>
     <string name="status_chat_retrying">(Waking backend… retrying %1$d/%2$d)</string>
     <string name="label_global_chat">Global Chat</string>
+    <string name="status_creating_project">Creating project…</string>
     <!-- FolderDetailActivity strings -->
     <string name="folder_detail_title">Folder</string>
     <string name="label_folder_status">Status: %1$s</string>
