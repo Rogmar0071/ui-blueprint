@@ -45,6 +45,12 @@ class GlobalChatMessage(SQLModel, table=True):
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
     )
+    # When a user message is edited, the original is preserved but marked
+    # superseded by the new message's id.
+    superseded_by_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, nullable=True),
+    )
 
     def __init__(self, **data):
         if "created_at" not in data or data["created_at"] is None:

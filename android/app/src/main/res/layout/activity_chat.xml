@@ -4,38 +4,120 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="24dp"
     tools:context=".ChatActivity">
 
-    <ScrollView
+    <!--
+      Multi-select contextual toolbar.
+      Shown only when isMultiSelectMode is active.
+    -->
+    <LinearLayout
+        android:id="@+id/toolbarMultiSelect"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:gravity="center_vertical"
+        android:background="?attr/colorSurfaceVariant"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvSelectionCount"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textStyle="bold"
+            android:textSize="13sp"
+            tools:text="2 selected" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSelectAll"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="@string/action_select_all"
+            android:textSize="12sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCopySelected"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="@string/action_copy"
+            android:textSize="12sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnShareSelected"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="@string/action_share"
+            android:textSize="12sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCancelSelect"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="@string/action_cancel"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Message list -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvMessages"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginBottom="12dp">
+        android:clipToPadding="false"
+        android:paddingBottom="8dp" />
+
+    <!-- Agent Mode toggle row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="4dp"
+        android:gravity="center_vertical">
 
         <TextView
-            android:id="@+id/tvChatLog"
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:textSize="13sp"
-            tools:text="You: Hello\nAI: Hi there!" />
-    </ScrollView>
+            android:layout_weight="1"
+            android:text="@string/label_agent_mode"
+            android:textSize="12sp"
+            android:alpha="0.8" />
 
-    <EditText
-        android:id="@+id/etMessage"
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchAgentMode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <!-- Input row -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="@string/hint_chat_input"
-        android:inputType="textMultiLine"
-        android:maxLines="4"
-        android:layout_marginBottom="8dp" />
+        android:orientation="horizontal"
+        android:padding="8dp">
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnSend"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/btn_send"
-        android:textSize="16sp" />
+        <EditText
+            android:id="@+id/etMessage"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="@string/hint_chat_input"
+            android:inputType="textMultiLine"
+            android:maxLines="4"
+            android:layout_marginEnd="8dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSend"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_send"
+            android:textSize="16sp" />
+    </LinearLayout>
 
 </LinearLayout>

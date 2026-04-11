@@ -60,4 +60,21 @@
     <string name="label_untitled_project">Untitled project</string>
     <string name="toast_analyze_already_running">Analyze already running</string>
     <string name="toast_upload_clip_first">Upload a clip first</string>
+    <!-- Chat action row -->
+    <string name="action_copy">Copy</string>
+    <string name="action_share">Share</string>
+    <string name="action_edit">Edit</string>
+    <string name="action_copy_artifact">Copy block</string>
+    <!-- Multi-select toolbar -->
+    <string name="action_select_all">Select all</string>
+    <string name="action_cancel">Cancel</string>
+    <!-- Agent Mode toggle -->
+    <string name="label_agent_mode">Agent Mode</string>
+    <!-- Edit message dialog -->
+    <string name="dialog_edit_message_title">Edit message</string>
+    <string name="dialog_btn_save">Save</string>
+    <!-- Share sheet chooser title -->
+    <string name="share_via">Share via</string>
+    <!-- Toast messages -->
+    <string name="toast_copied">Copied</string>
 </resources>

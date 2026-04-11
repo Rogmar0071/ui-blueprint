@@ -1,6 +1,10 @@
 package com.uiblueprint.android
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.view.MenuItem
 import android.view.View
@@ -9,6 +13,7 @@ import android.widget.Toast
 import androidx.appcompat.app.ActionBarDrawerToggle
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.uiblueprint.android.databinding.ActivityMainBinding
@@ -27,31 +32,61 @@ import java.util.concurrent.Executors
  *  - A hamburger-icon AppBar that opens the Projects drawer.
  *  - A left-side drawer (~half screen, min 320dp) listing all projects fetched
  *    from GET /v1/folders via a scrollable RecyclerView, plus a "New Project" button.
- *  - Main area: global chat panel.
+ *  - Main area: global chat panel with RecyclerView, always-visible Copy/Share/Edit
+ *    action rows, multi-select mode, and Agent Mode toggle.
  *
  * All recording, gallery-pick, and analyze actions have been moved to
  * FolderDetailActivity so that each clip is automatically associated with a project.
  */
-class MainActivity : AppCompatActivity(), FolderAdapter.FolderActionListener {
+class MainActivity : AppCompatActivity(),
+    FolderAdapter.FolderActionListener,
+    ChatMessageAdapter.MessageActionListener {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var drawerToggle: ActionBarDrawerToggle
+    private lateinit var prefs: SharedPreferences
     private val folderAdapter = FolderAdapter(this)
+    private lateinit var chatAdapter: ChatMessageAdapter
 
     private val chatExecutor = Executors.newSingleThreadExecutor { Thread(it, "GlobalChat-worker") }
     private val projectExecutor = Executors.newSingleThreadExecutor { Thread(it, "NewProject-worker") }
+
+    companion object {
+        const val STATUS_SAVED = "saved"
+        const val STATUS_FAILED = "failed"
+        private const val PREFS_NAME = "chat_prefs"
+        private const val PREF_AGENT_MODE = "agent_mode"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
         setupDrawer()
         setupFolderList()
+        setupChatList()
 
         binding.btnNewProject.setOnClickListener { onNewProjectClicked() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.tvBackendUrl.text = getString(R.string.label_backend_url, BuildConfig.BACKEND_BASE_URL)
+
+        // Restore agent mode preference.
+        binding.switchAgentMode.isChecked = prefs.getBoolean(PREF_AGENT_MODE, false)
+        binding.switchAgentMode.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(PREF_AGENT_MODE, isChecked).apply()
+        }
+
+        // Multi-select toolbar buttons.
+        binding.btnSelectAll.setOnClickListener { chatAdapter.selectAll() }
+        binding.btnCopySelected.setOnClickListener { onCopySelectedClicked() }
+        binding.btnShareSelected.setOnClickListener { onShareSelectedClicked() }
+        binding.btnCancelSelect.setOnClickListener {
+            chatAdapter.clearSelection()
+            updateMultiSelectToolbar()
+        }
 
         loadFolders()
         loadGlobalChat()
@@ -214,8 +249,16 @@ class MainActivity : AppCompatActivity(), FolderAdapter.FolderActionListener {
     }
 
     // -------------------------------------------------------------------------
-    // Global chat (embedded panel)
+    // Global chat (embedded panel with RecyclerView)
     // -------------------------------------------------------------------------
+
+    private fun setupChatList() {
+        chatAdapter = ChatMessageAdapter(this)
+        binding.rvChatMessages.layoutManager = LinearLayoutManager(this).apply {
+            stackFromEnd = true
+        }
+        binding.rvChatMessages.adapter = chatAdapter
+    }
 
     private fun loadGlobalChat() {
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
@@ -253,8 +296,11 @@ class MainActivity : AppCompatActivity(), FolderAdapter.FolderActionListener {
         binding.etMessage.setText("")
         binding.btnSend.isEnabled = false
 
+        val agentMode = binding.switchAgentMode.isChecked
+
         val bodyJson = JSONObject().apply {
             put("message", message)
+            put("agent_mode", agentMode)
             put(
                 "context",
                 JSONObject().apply {
@@ -271,13 +317,19 @@ class MainActivity : AppCompatActivity(), FolderAdapter.FolderActionListener {
             .url("$baseUrl/api/chat")
             .post(bodyJson.toRequestBody("application/json".toMediaType()))
             .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            // Send X-Agent-Mode header alongside body param for full compatibility.
+            .addHeader("X-Agent-Mode", if (agentMode) "1" else "0")
             .build()
 
         chatExecutor.execute {
             try {
                 val response = BackendClient.executeWithRetry(request) { attempt, total ->
                     runOnUiThread {
-                        appendChatLine(getString(R.string.status_chat_retrying, attempt, total))
+                        Toast.makeText(
+                            this,
+                            getString(R.string.status_chat_retrying, attempt, total),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
                 response.use { resp ->
@@ -285,27 +337,17 @@ class MainActivity : AppCompatActivity(), FolderAdapter.FolderActionListener {
                     runOnUiThread {
                         when {
                             resp.code == 401 || resp.code == 403 ->
-                                appendChatLine("Unauthorized: check BACKEND_API_KEY")
+                                Toast.makeText(this, "Unauthorized: check BACKEND_API_KEY", Toast.LENGTH_SHORT).show()
                             !resp.isSuccessful ->
-                                appendChatLine("Error: HTTP ${resp.code}")
-                            else -> {
-                                val responseJson = runCatching { JSONObject(body) }.getOrNull()
-                                val userMessage = runCatching {
-                                    responseJson?.getJSONObject("user_message")?.getString("content")
-                                }.getOrNull()
-                                val reply = runCatching {
-                                    responseJson?.getJSONObject("assistant_message")?.getString("content")
-                                }.getOrElse { "Error: unexpected response format" }
-                                if (!userMessage.isNullOrBlank()) appendChatLine("You: $userMessage")
-                                appendChatLine("AI: $reply")
-                            }
+                                Toast.makeText(this, "Error: HTTP ${resp.code}", Toast.LENGTH_SHORT).show()
+                            else -> loadGlobalChat()
                         }
                         binding.btnSend.isEnabled = true
                     }
                 }
             } catch (e: IOException) {
                 runOnUiThread {
-                    appendChatLine("Error: ${e.message ?: "Network error"}")
+                    Toast.makeText(this, "Error: ${e.message ?: "Network error"}", Toast.LENGTH_SHORT).show()
                     binding.btnSend.isEnabled = true
                 }
             }
@@ -314,39 +356,157 @@ class MainActivity : AppCompatActivity(), FolderAdapter.FolderActionListener {
 
     private fun renderChatMessages(messages: JSONArray?) {
         if (messages == null || messages.length() == 0) {
-            scrollChatToBottom()
+            chatAdapter.submitList(emptyList())
             return
         }
-        val lines = buildString {
-            for (i in 0 until messages.length()) {
-                val msg = messages.getJSONObject(i)
-                val prefix = if (msg.optString("role") == "user") "You" else "AI"
-                if (i > 0) append('\n')
-                append(prefix)
-                append(": ")
-                append(msg.optString("content"))
-            }
+        val list = mutableListOf<ChatMessageAdapter.Message>()
+        for (i in 0 until messages.length()) {
+            val msg = messages.getJSONObject(i)
+            list.add(
+                ChatMessageAdapter.Message(
+                    id = msg.optString("id"),
+                    role = msg.optString("role"),
+                    content = msg.optString("content"),
+                    superseded = msg.optBoolean("superseded", false),
+                )
+            )
         }
-        binding.tvChatLog.text = lines
-        scrollChatToBottom()
+        // API returns newest-first; reverse for stackFromEnd display.
+        list.reverse()
+        chatAdapter.submitList(list)
+        binding.rvChatMessages.scrollToPosition(chatAdapter.itemCount - 1)
     }
-
-    private fun appendChatLine(line: String) {
-        val current = binding.tvChatLog.text
-        binding.tvChatLog.text = if (current.isNullOrEmpty()) line else "$current\n$line"
-        scrollChatToBottom()
-    }
-
-    private fun scrollChatToBottom() {
-        binding.scrollChat.post {
-            binding.scrollChat.fullScroll(View.FOCUS_DOWN)
-        }
-    }
-
-    data class FolderItem(val id: String, val status: String, val label: String)
 
     // -------------------------------------------------------------------------
-    // FolderActionListener – Rename / Delete
+    // ChatMessageAdapter.MessageActionListener
+    // -------------------------------------------------------------------------
+
+    override fun onCopyMessage(message: ChatMessageAdapter.Message) {
+        copyToClipboard(message.content)
+        Toast.makeText(this, getString(R.string.toast_copied), Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onShareMessage(message: ChatMessageAdapter.Message) {
+        shareText(message.content)
+    }
+
+    override fun onEditMessage(message: ChatMessageAdapter.Message) {
+        showEditDialog(message)
+    }
+
+    override fun onSelectionChanged(selectedCount: Int) {
+        updateMultiSelectToolbar()
+    }
+
+    // -------------------------------------------------------------------------
+    // Multi-select toolbar
+    // -------------------------------------------------------------------------
+
+    private fun updateMultiSelectToolbar() {
+        val inMultiSelect = chatAdapter.isMultiSelectMode
+        binding.toolbarMultiSelect.visibility = if (inMultiSelect) View.VISIBLE else View.GONE
+        if (inMultiSelect) {
+            val count = chatAdapter.getSelectedMessages().size
+            binding.tvSelectionCount.text = resources.getQuantityString(
+                R.plurals.multi_select_count, count, count
+            )
+        }
+    }
+
+    private fun onCopySelectedClicked() {
+        val text = chatAdapter.getSelectedMessages().joinToString("\n\n") {
+            "${if (it.role == "user") "You" else "AI"}: ${it.content}"
+        }
+        copyToClipboard(text)
+        chatAdapter.clearSelection()
+        updateMultiSelectToolbar()
+        Toast.makeText(this, getString(R.string.toast_copied), Toast.LENGTH_SHORT).show()
+    }
+
+    private fun onShareSelectedClicked() {
+        val text = chatAdapter.getSelectedMessages().joinToString("\n\n") {
+            "${if (it.role == "user") "You" else "AI"}: ${it.content}"
+        }
+        shareText(text)
+        chatAdapter.clearSelection()
+        updateMultiSelectToolbar()
+    }
+
+    // -------------------------------------------------------------------------
+    // Edit message
+    // -------------------------------------------------------------------------
+
+    private fun showEditDialog(message: ChatMessageAdapter.Message) {
+        val editText = EditText(this).apply {
+            setText(message.content)
+            setSelection(message.content.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_edit_message_title))
+            .setView(editText)
+            .setPositiveButton(getString(R.string.dialog_btn_save)) { _, _ ->
+                val newContent = editText.text.toString().trim()
+                if (newContent.isNotBlank()) {
+                    submitEdit(message.id, newContent)
+                }
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    private fun submitEdit(messageId: String, newContent: String) {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+
+        val bodyJson = JSONObject().apply { put("content", newContent) }.toString()
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat/$messageId/edit")
+            .post(bodyJson.toRequestBody("application/json".toMediaType()))
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        chatExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            loadGlobalChat()
+                        } else {
+                            Toast.makeText(this, "Edit failed: HTTP ${resp.code}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (e: IOException) {
+                runOnUiThread {
+                    Toast.makeText(this, "Edit error: ${e.message ?: "Network error"}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Clipboard / Share helpers
+    // -------------------------------------------------------------------------
+
+    private fun copyToClipboard(text: String) {
+        val clipboard = ContextCompat.getSystemService(this, ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("chat_message", text))
+    }
+
+    private fun shareText(text: String) {
+        startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, text)
+                },
+                getString(R.string.share_via)
+            )
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // Folder rename / delete dialogs
     // -------------------------------------------------------------------------
 
     override fun onRenameFolder(folderId: String, currentTitle: String) {
@@ -439,9 +599,5 @@ class MainActivity : AppCompatActivity(), FolderAdapter.FolderActionListener {
         }
     }
 
-    companion object {
-        const val STATUS_SAVED = "saved"
-        const val STATUS_FAILED = "failed"
-    }
+    data class FolderItem(val id: String, val status: String, val label: String)
 }
-

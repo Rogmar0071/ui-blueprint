@@ -54,21 +54,94 @@
             android:textStyle="bold"
             android:textSize="13sp" />
 
-        <androidx.core.widget.NestedScrollView
-            android:id="@+id/scrollChat"
+        <!-- Multi-select contextual toolbar (hidden by default) -->
+        <LinearLayout
+            android:id="@+id/toolbarMultiSelect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:gravity="center_vertical"
+            android:background="?attr/colorSurfaceVariant"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvSelectionCount"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textStyle="bold"
+                android:textSize="13sp"
+                tools:text="2 selected" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSelectAll"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="@string/action_select_all"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCopySelected"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="@string/action_copy"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnShareSelected"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="@string/action_share"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCancelSelect"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="@string/action_cancel"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- Message list (replaces the old ScrollView+TextView) -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvChatMessages"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:fillViewport="true"
-            android:padding="16dp">
+            android:clipToPadding="false"
+            android:paddingBottom="8dp" />
+
+        <!-- Agent mode toggle row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="4dp"
+            android:gravity="center_vertical">
 
             <TextView
-                android:id="@+id/tvChatLog"
-                android:layout_width="match_parent"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:textSize="12sp" />
-        </androidx.core.widget.NestedScrollView>
+                android:layout_weight="1"
+                android:text="@string/label_agent_mode"
+                android:textSize="12sp"
+                android:alpha="0.8" />
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchAgentMode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -155,4 +228,3 @@
     </LinearLayout>
 
 </androidx.drawerlayout.widget.DrawerLayout>
-

@@ -405,9 +405,10 @@ class TestChat:
         assert body["schema_version"]
         assert body["tools_available"]
         assert len(body["messages"]) == 2
-        assert body["messages"][0]["role"] == "user"
-        assert body["messages"][0]["context"]["session_id"] == "sess-1"
-        assert body["messages"][1]["role"] == "assistant"
+        # Messages are returned newest-first.
+        assert body["messages"][0]["role"] == "assistant"
+        assert body["messages"][1]["role"] == "user"
+        assert body["messages"][1]["context"]["session_id"] == "sess-1"
 
     def test_chat_history_requires_auth(self, client: TestClient) -> None:
         response = client.get("/api/chat")
