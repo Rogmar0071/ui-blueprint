@@ -178,6 +178,27 @@ def _json_response(model: BaseModel, status_code: int = 200) -> JSONResponse:
     )
 
 
+def _find_active_analyze_job(db, folder_id: uuid.UUID):
+    """
+    Return an existing ``queued`` or ``running`` analyze job for *folder_id*,
+    or ``None`` if none exists.
+
+    Called by /clip and /messages before creating a new analyze job so that
+    duplicate submissions are deduplicated.
+    """
+    from sqlmodel import select
+
+    from backend.app.models import Job
+
+    return db.exec(
+        select(Job)
+        .where(Job.folder_id == folder_id)
+        .where(Job.type == "analyze")
+        .where(Job.status.in_(["queued", "running"]))
+        .order_by(Job.created_at.asc())
+    ).first()
+
+
 # ---------------------------------------------------------------------------
 # POST /v1/folders  — create folder
 # ---------------------------------------------------------------------------
@@ -400,6 +421,35 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
 
     # Update folder clip_object_key.
     folder.clip_object_key = clip_key
+    folder.updated_at = datetime.now(timezone.utc)
+    db.add(folder)
+    db.commit()
+
+    # Deduplicate: if an analyze job is already queued/running, return it.
+    _mark_stalled_jobs(db, fid)
+    existing_job = _find_active_analyze_job(db, fid)
+    if existing_job is not None:
+        log_event(
+            source="backend",
+            level="info",
+            event_type="jobs.deduped",
+            message=(
+                f"Duplicate analyze job suppressed for folder {fid} (clip upload); "
+                f"returning existing job {existing_job.id} (status={existing_job.status})"
+            ),
+            folder_id=str(fid),
+            job_id=str(existing_job.id),
+        )
+        return JSONResponse(
+            content={
+                "folder_id": folder_id,
+                "job": _job_dict(existing_job),
+                "clip_object_key": clip_key,
+                "deduped": True,
+            },
+            status_code=202,
+        )
+
     folder.status = "queued"
     folder.updated_at = datetime.now(timezone.utc)
     db.add(folder)
@@ -666,17 +716,47 @@ def post_message(
     if intent in ("analyze", "blueprint"):
         from backend.app import worker
 
-        new_job = Job(folder_id=fid, type=intent)
-        db.add(new_job)
-        db.commit()
-        db.refresh(new_job)
-        rq_id = worker.enqueue_job(str(new_job.id), intent)
-        if rq_id:
-            new_job.rq_job_id = rq_id
+        # Deduplicate analyze jobs: reuse existing queued/running job.
+        if intent == "analyze":
+            _mark_stalled_jobs(db, fid)
+            existing_job = _find_active_analyze_job(db, fid)
+            if existing_job is not None:
+                log_event(
+                    source="backend",
+                    level="info",
+                    event_type="jobs.deduped",
+                    message=(
+                        f"Duplicate analyze job suppressed for folder {fid} (chat message); "
+                        f"returning existing job {existing_job.id} (status={existing_job.status})"
+                    ),
+                    folder_id=str(fid),
+                    job_id=str(existing_job.id),
+                )
+                enqueued_job = existing_job
+            else:
+                new_job = Job(folder_id=fid, type=intent)
+                db.add(new_job)
+                db.commit()
+                db.refresh(new_job)
+                rq_id = worker.enqueue_job(str(new_job.id), intent)
+                if rq_id:
+                    new_job.rq_job_id = rq_id
+                    db.add(new_job)
+                    db.commit()
+                    db.refresh(new_job)
+                enqueued_job = new_job
+        else:
+            new_job = Job(folder_id=fid, type=intent)
             db.add(new_job)
             db.commit()
             db.refresh(new_job)
-        enqueued_job = new_job
+            rq_id = worker.enqueue_job(str(new_job.id), intent)
+            if rq_id:
+                new_job.rq_job_id = rq_id
+                db.add(new_job)
+                db.commit()
+                db.refresh(new_job)
+            enqueued_job = new_job
     # -----------------------------------------------------------------------
 
     # Build folder context (refresh job/artifact lists after possible enqueue).

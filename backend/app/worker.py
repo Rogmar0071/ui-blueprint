@@ -68,17 +68,24 @@ def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
 
     When BACKEND_DISABLE_JOBS is set the job function is called directly
     on the current thread so tests get predictable behaviour.
+
+    RQ job timeouts are configurable via env vars:
+    - RQ_JOB_TIMEOUT_S: hard job timeout in seconds (default 1800)
+    - RQ_RESULT_TTL_S: how long to retain job result metadata (default 86400)
     """
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
         return None
+
+    job_timeout = int(os.environ.get("RQ_JOB_TIMEOUT_S", 1800))
+    result_ttl = int(os.environ.get("RQ_RESULT_TTL_S", 86400))
 
     q = _redis_queue()
     if q is not None:
         fn = _JOB_FUNCTIONS.get(job_type)
         if fn is None:
             raise ValueError(f"Unknown job type: {job_type!r}")
-        rq_job = q.enqueue(fn, job_id)
+        rq_job = q.enqueue(fn, job_id, job_timeout=job_timeout, result_ttl=result_ttl)
         return rq_job.id
 
     # No Redis – run synchronously in a thread pool (same behaviour as the
@@ -173,8 +180,9 @@ def _update_folder_status(folder_id: str, status: str) -> None:
 # Job functions
 # ---------------------------------------------------------------------------
 
-# Maximum seconds allowed for the extractor subprocess in run_analyze.
-_EXTRACTOR_TIMEOUT_SECONDS = 300
+# Default seconds allowed for the extractor subprocess in run_analyze.
+# Overridable via ANALYZE_EXTRACT_TIMEOUT_S env var.
+_EXTRACTOR_TIMEOUT_SECONDS_DEFAULT = 900
 
 
 def run_analyze(job_id: str) -> None:
@@ -198,6 +206,9 @@ def run_analyze(job_id: str) -> None:
         return
 
     folder_id = str(job.folder_id)
+    extract_timeout = int(
+        os.environ.get("ANALYZE_EXTRACT_TIMEOUT_S", _EXTRACTOR_TIMEOUT_SECONDS_DEFAULT)
+    )
     _update_job(job_id, status="running", progress=5)
     _update_folder_status(folder_id, "running")
     _log_event(
@@ -247,7 +258,7 @@ def run_analyze(job_id: str) -> None:
                 [sys.executable, "-m", "ui_blueprint", "extract", clip_path, "-o", analysis_path],
                 capture_output=True,
                 text=True,
-                timeout=_EXTRACTOR_TIMEOUT_SECONDS,
+                timeout=extract_timeout,
             )
             if result.returncode != 0:
                 # Capture last 1000 characters of stderr for diagnostics.
@@ -337,7 +348,7 @@ def run_analyze(job_id: str) -> None:
             job_id=job_id,
             error_type="timeout",
             error_detail=(
-                f"Extractor subprocess exceeded {_EXTRACTOR_TIMEOUT_SECONDS}s timeout. "
+                f"Extractor subprocess exceeded {extract_timeout}s timeout. "
                 f"Original error: {str(exc)[:1900]}"
             ),
         )

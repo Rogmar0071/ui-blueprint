@@ -764,3 +764,223 @@ class TestArtifacts:
         fid = folder["id"]
         resp = client.get(f"/v1/folders/{fid}/artifacts/{uuid.uuid4()}", headers=_auth())
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Dedupe: /clip and /messages analyze intent
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeDedupe:
+    """Verify analyze-job deduplication works across /clip and /messages."""
+
+    def _seed_queued_analyze_job(self, client: TestClient, fid: str) -> str:
+        """Create a queued analyze job via POST /jobs and return its id."""
+        resp = client.post(f"/v1/folders/{fid}/jobs", json={"type": "analyze"}, headers=_auth())
+        assert resp.status_code == 202
+        return resp.json()["job"]["id"]
+
+    def test_upload_deduped_when_analyze_job_active(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        Second POST /clip while analyze queued/running returns deduped + same job id;
+        job count unchanged.
+        """
+        for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+            monkeypatch.delenv(k, raising=False)
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+
+        # First clip upload — creates a queued analyze job.
+        resp1 = client.post(
+            f"/v1/folders/{fid}/clip",
+            files={"clip": ("a.mp4", b"\x00\x01", "video/mp4")},
+            headers=_auth(),
+        )
+        assert resp1.status_code == 202
+        job1_id = resp1.json()["job"]["id"]
+
+        # Second clip upload — should deduplicate.
+        resp2 = client.post(
+            f"/v1/folders/{fid}/clip",
+            files={"clip": ("b.mp4", b"\x02\x03", "video/mp4")},
+            headers=_auth(),
+        )
+        assert resp2.status_code == 202
+        body2 = resp2.json()
+        assert body2["job"]["id"] == job1_id, "Expected same job id on deduped response"
+        assert body2.get("deduped") is True
+
+        # Only one analyze job row should exist.
+        list_resp = client.get(f"/v1/folders/{fid}/jobs", headers=_auth())
+        analyze_jobs = [j for j in list_resp.json()["jobs"] if j["type"] == "analyze"]
+        assert len(analyze_jobs) == 1
+
+    def test_analyze_intent_deduped_when_job_active(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        Second analyze intent via POST /messages reuses same queued/running analyze job;
+        job count unchanged.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        import backend.app.folder_routes as fr
+
+        monkeypatch.setattr(fr, "_call_openai_responses_api", _mock_openai)
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job1_id = self._seed_queued_analyze_job(client, fid)
+
+        # Send analyze-intent message while job is queued.
+        resp = client.post(
+            f"/v1/folders/{fid}/messages",
+            json={"message": "Please analyze this clip"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert "enqueued_job" in body
+        assert body["enqueued_job"]["id"] == job1_id, "Expected deduped job id"
+
+        # No additional analyze job row created.
+        list_resp = client.get(f"/v1/folders/{fid}/jobs", headers=_auth())
+        analyze_jobs = [j for j in list_resp.json()["jobs"] if j["type"] == "analyze"]
+        assert len(analyze_jobs) == 1
+
+
+# ---------------------------------------------------------------------------
+# Worker timeout env var tests
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerTimeouts:
+    """Verify worker timeout env vars are respected."""
+
+    def test_enqueue_job_uses_env_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """enqueue_job passes job_timeout/result_ttl from env vars to q.enqueue."""
+        import unittest.mock as mock
+
+        import backend.app.worker as worker_module
+
+        monkeypatch.setenv("RQ_JOB_TIMEOUT_S", "300")
+        monkeypatch.setenv("RQ_RESULT_TTL_S", "7200")
+        monkeypatch.delenv("BACKEND_DISABLE_JOBS", raising=False)
+
+        mock_rq_job = mock.MagicMock()
+        mock_rq_job.id = "rq-test-id"
+
+        mock_queue = mock.MagicMock()
+        mock_queue.enqueue.return_value = mock_rq_job
+
+        with mock.patch.object(worker_module, "_redis_queue", return_value=mock_queue):
+            result = worker_module.enqueue_job("job-123", "analyze")
+
+        assert result == "rq-test-id"
+        mock_queue.enqueue.assert_called_once()
+        _, call_kwargs = mock_queue.enqueue.call_args
+        assert call_kwargs["job_timeout"] == 300
+        assert call_kwargs["result_ttl"] == 7200
+
+    def test_enqueue_job_uses_default_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """enqueue_job defaults: RQ_JOB_TIMEOUT_S=1800, RQ_RESULT_TTL_S=86400."""
+        import unittest.mock as mock
+
+        import backend.app.worker as worker_module
+
+        monkeypatch.delenv("RQ_JOB_TIMEOUT_S", raising=False)
+        monkeypatch.delenv("RQ_RESULT_TTL_S", raising=False)
+        monkeypatch.delenv("BACKEND_DISABLE_JOBS", raising=False)
+
+        mock_rq_job = mock.MagicMock()
+        mock_rq_job.id = "rq-default-id"
+
+        mock_queue = mock.MagicMock()
+        mock_queue.enqueue.return_value = mock_rq_job
+
+        with mock.patch.object(worker_module, "_redis_queue", return_value=mock_queue):
+            result = worker_module.enqueue_job("job-456", "analyze")
+
+        assert result == "rq-default-id"
+        _, call_kwargs = mock_queue.enqueue.call_args
+        assert call_kwargs["job_timeout"] == 1800
+        assert call_kwargs["result_ttl"] == 86400
+
+    def test_run_analyze_uses_extract_timeout_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess.run timeout in run_analyze uses ANALYZE_EXTRACT_TIMEOUT_S."""
+        import unittest.mock as mock
+
+        import backend.app.storage as storage_module
+        import backend.app.worker as worker_module
+
+        monkeypatch.setenv("ANALYZE_EXTRACT_TIMEOUT_S", "42")
+
+        captured_kwargs: dict = {}
+
+        def _fake_subprocess_run(cmd, **kwargs):
+            captured_kwargs.update(kwargs)
+            raise RuntimeError("short-circuit for test")
+
+        # We only care that the timeout kwarg is passed — mock the whole DB + storage
+        # chain so we reach subprocess.run.
+        mock_job = mock.MagicMock()
+        mock_job.folder_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        mock_job.rq_job_id = None
+
+        mock_folder = mock.MagicMock()
+        mock_folder.clip_object_key = "test/clip.mp4"
+
+        with (
+            mock.patch.object(worker_module, "_get_job", return_value=mock_job),
+            mock.patch.object(worker_module, "_get_folder", return_value=mock_folder),
+            mock.patch.object(worker_module, "_update_job"),
+            mock.patch.object(worker_module, "_update_folder_status"),
+            mock.patch.object(worker_module, "_log_event"),
+            mock.patch.object(storage_module, "get_object_bytes", return_value=b"\x00"),
+            mock.patch("subprocess.run", side_effect=_fake_subprocess_run),
+        ):
+            worker_module.run_analyze("job-999")
+
+        assert "timeout" in captured_kwargs, "subprocess.run must receive timeout kwarg"
+        assert captured_kwargs["timeout"] == 42
+
+    def test_run_analyze_uses_default_extract_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess.run timeout defaults to ANALYZE_EXTRACT_TIMEOUT_S=900 when unset."""
+        import unittest.mock as mock
+
+        import backend.app.storage as storage_module
+        import backend.app.worker as worker_module
+
+        monkeypatch.delenv("ANALYZE_EXTRACT_TIMEOUT_S", raising=False)
+
+        captured_kwargs: dict = {}
+
+        def _fake_subprocess_run(cmd, **kwargs):
+            captured_kwargs.update(kwargs)
+            raise RuntimeError("short-circuit for test")
+
+        mock_job = mock.MagicMock()
+        mock_job.folder_id = uuid.UUID("00000000-0000-0000-0000-000000000002")
+        mock_job.rq_job_id = None
+
+        mock_folder = mock.MagicMock()
+        mock_folder.clip_object_key = "test/clip.mp4"
+
+        with (
+            mock.patch.object(worker_module, "_get_job", return_value=mock_job),
+            mock.patch.object(worker_module, "_get_folder", return_value=mock_folder),
+            mock.patch.object(worker_module, "_update_job"),
+            mock.patch.object(worker_module, "_update_folder_status"),
+            mock.patch.object(worker_module, "_log_event"),
+            mock.patch.object(storage_module, "get_object_bytes", return_value=b"\x00"),
+            mock.patch("subprocess.run", side_effect=_fake_subprocess_run),
+        ):
+            worker_module.run_analyze("job-000")
+
+        assert captured_kwargs["timeout"] == 900
