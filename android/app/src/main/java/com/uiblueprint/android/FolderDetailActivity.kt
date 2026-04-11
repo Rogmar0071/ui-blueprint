@@ -675,7 +675,7 @@ class FolderDetailActivity : AppCompatActivity() {
         if (jobs == null) return false
         for (i in 0 until jobs.length()) {
             val job = jobs.getJSONObject(i)
-            if (job.optString("type") == "analyze" &&
+            if (job.optString("type") in ACTIVE_JOB_TYPES &&
                 job.optString("status") in ACTIVE_JOB_STATUSES
             ) {
                 return true
@@ -709,7 +709,9 @@ class FolderDetailActivity : AppCompatActivity() {
                     runOnUiThread {
                         isFolderLoading.set(false)
                         if (resp.isSuccessful) {
-                            renderFolder(JSONObject(bodyStr))
+                            val json = runCatching { JSONObject(bodyStr) }.getOrNull()
+                            if (json != null) renderFolder(json)
+                            else binding.tvFolderStatus.text = getString(R.string.folder_load_error)
                         } else {
                             binding.tvFolderStatus.text = getString(
                                 R.string.folder_load_error,
@@ -777,7 +779,7 @@ class FolderDetailActivity : AppCompatActivity() {
             val activeAnalyzeStatus = (0 until jobs.length())
                 .map { jobs.getJSONObject(it) }
                 .firstOrNull {
-                    it.optString("type") == "analyze" &&
+                    it.optString("type") in ACTIVE_JOB_TYPES &&
                         it.optString("status") in ACTIVE_JOB_STATUSES
                 }
                 ?.optString("status") ?: "queued" // unreachable: guaranteed by hasActiveJob
@@ -817,7 +819,8 @@ class FolderDetailActivity : AppCompatActivity() {
                 response.use { resp ->
                     val bodyStr = resp.body?.string() ?: ""
                     if (resp.isSuccessful) {
-                        val messages = JSONObject(bodyStr).optJSONArray("messages")
+                        val messages = runCatching { JSONObject(bodyStr) }.getOrNull()
+                            ?.optJSONArray("messages")
                         runOnUiThread { renderMessages(messages) }
                     }
                 }
@@ -913,6 +916,7 @@ class FolderDetailActivity : AppCompatActivity() {
         private const val RECORDING_TIMEOUT_MS = 30_000L
         private const val POLL_INTERVAL_MS = 2_000L
         private val ACTIVE_JOB_STATUSES = setOf("queued", "running")
+        private val ACTIVE_JOB_TYPES = setOf("analyze", "analyze_optional")
         private const val ERROR_PERMISSION_DENIED = "Screen capture permission denied"
         private const val ERROR_START_FAILED = "Capture failed to start recording."
     }

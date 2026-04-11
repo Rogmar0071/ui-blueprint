@@ -71,7 +71,8 @@ object BackendClient {
             }
             try {
                 val response = httpClient.newCall(request).execute()
-                if (response.code in RETRYABLE_STATUS_CODES && attempt < MAX_ATTEMPTS) {
+                val isBodyless = request.body == null
+                if (isBodyless && response.code in RETRYABLE_STATUS_CODES && attempt < MAX_ATTEMPTS) {
                     // Close the unusable response body before retrying
                     response.close()
                     continue
