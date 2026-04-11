@@ -147,3 +147,51 @@ def get_object_bytes(object_key: str) -> Optional[bytes]:
         if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
             return None
         raise
+
+
+def get_object_to_file(object_key: str, local_path: str) -> bool:
+    """
+    Stream *object_key* from R2 directly to *local_path* on disk.
+
+    Bytes are written incrementally via boto3's ``download_file``, so the
+    full object is never held in memory.
+
+    Returns ``True`` on success, ``False`` if the object does not exist.
+    Raises ``RuntimeError`` if R2 is not configured.
+    """
+    import botocore.exceptions
+
+    client = _get_client()
+    try:
+        client.download_file(_bucket(), object_key, local_path)
+        return True
+    except botocore.exceptions.ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+            return False
+        raise
+
+
+def upload_file(
+    folder_id: str,
+    filename: str,
+    local_path: str,
+    content_type: str = "application/octet-stream",
+) -> str:
+    """
+    Upload a local file to R2 under ``folders/{folder_id}/{filename}``.
+
+    Uses boto3's ``upload_file`` which streams from disk, avoiding loading
+    the full file into memory.
+
+    Returns the object key.
+    Raises ``RuntimeError`` if R2 is not configured.
+    """
+    client = _get_client()
+    key = folder_object_key(folder_id, filename)
+    client.upload_file(
+        local_path,
+        _bucket(),
+        key,
+        ExtraArgs={"ContentType": content_type},
+    )
+    return key

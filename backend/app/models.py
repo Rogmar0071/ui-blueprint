@@ -144,6 +144,35 @@ class Job(SQLModel, table=True):
     )
     rq_job_id: Optional[str] = Field(default=None)
 
+    # ---------------------------------------------------------------------------
+    # Pipeline v1 checkpoint fields (analyze stage)
+    # ---------------------------------------------------------------------------
+    # Current pipeline stage: 'prepare' | 'frames' | 'summarize'
+    analyze_stage: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    # How many frames have been extracted and uploaded so far.
+    analyze_cursor_frame_index: Optional[int] = Field(
+        default=None, sa_column=Column(sa.Integer, nullable=True)
+    )
+    # Estimated total frames to extract (set during prepare; may be None).
+    analyze_total_frames: Optional[int] = Field(
+        default=None, sa_column=Column(sa.Integer, nullable=True)
+    )
+    # Clip object key cached in the checkpoint for robustness.
+    analyze_clip_object_key: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True)
+    )
+    # User-selected per-job options (JSON).  Persisted at enqueue time and
+    # read by the pipeline to decide which optional stages to run.
+    # Schema: {"additional_analysis": {"enabled": bool, "keyframes": bool, ...}}
+    analyze_options: Optional[Any] = Field(
+        default=None, sa_column=Column(sa.JSON, nullable=True)
+    )
+    # Segment cursor – number of segments processed so far.
+    # Used by baseline_segments stage (analyze) and segments stage (analyze_optional).
+    analyze_cursor_segment_index: Optional[int] = Field(
+        default=None, sa_column=Column(sa.Integer, nullable=True)
+    )
+
     def __init__(self, **data):
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()

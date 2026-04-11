@@ -38,7 +38,7 @@ exposes the results over HTTP.
 | `GET`  | `/v1/folders/{id}/artifacts/{artifact_id}` | Presigned download URL for artifact |
 | `POST` | `/v1/folders/{id}/messages` | Send a chat message (AI replies, persisted) |
 | `GET`  | `/v1/folders/{id}/messages` | List folder chat history |
-| `POST` | `/v1/folders/{id}/jobs` | Enqueue a job (`analyze` or `blueprint`) |
+| `POST` | `/v1/folders/{id}/jobs` | Enqueue a job (`analyze`, `analyze_optional`, or `blueprint`) |
 | `GET`  | `/v1/folders/{id}/jobs` | List jobs for the folder |
 | `GET`  | `/v1/folders/{id}/jobs/{job_id}` | Get job status |
 
@@ -227,5 +227,82 @@ To serve over HTTPS, install Nginx + Certbot, configure a proxy_pass to `localho
 | `OPENAI_MODEL_CHAT` | `gpt-4.1-mini` | Model used for `/api/chat` and folder chat |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI base URL (strip trailing `/v1` if present — added automatically) |
 | `OPENAI_TIMEOUT_SECONDS` | `30` | Request timeout in seconds for OpenAI calls |
+| `ANALYZE_SEGMENT_SIZE_S` | `10` | Seconds per segment in the segments manifest |
+| `ANALYZE_MAX_SEGMENTS` | `600` | Maximum segments in a manifest (bounds output size) |
+| `ANALYZE_STEP_MAX_SECONDS` | `30` | Wall-clock budget (s) per baseline_segments / optional step |
+| `ANALYZE_ENABLE_OPTIONAL_DEFAULT` | `0` | Set to `1` to enable `additional_analysis` by default |
 
 > **Port**: Render sets `$PORT` automatically; the server binds `${PORT:-8000}` (defaults to `8000` for local dev).
+
+---
+
+## Analyze Pipeline v1 (segment-based)
+
+The `analyze` job type implements a resumable, step-based pipeline with
+**Option B completion semantics**: the job marks succeeded (100%) once the
+baseline is done; optional per-segment analyses run asynchronously in a
+separate `analyze_optional` job.
+
+### Pipeline stages
+
+| Stage | Progress | Description |
+|-------|----------|-------------|
+| `manifest` | 5 → 20 | Stream clip, probe duration (ffprobe), build `segments_manifest_json` artifact. |
+| `baseline_segments` | 20 → 80 | Per-segment `baseline.json` artifacts (cursor-based, resumable). |
+| `aggregate` | 80 → 100 | Build `analysis_json` from manifest + baseline refs; optionally auto-enqueue `analyze_optional`. |
+
+### Segment ID scheme
+
+```
+seg_{index:04d}_{t0_ms}_{t1_ms}
+```
+
+Example: `seg_0000_0_10000` (first 10-second segment).
+
+### Artifact types
+
+| Type | Object key | Description |
+|------|-----------|-------------|
+| `segments_manifest_json` | `folders/{id}/segments/manifest.json` | Bounded manifest (≤ MAX_SEGMENTS) |
+| `baseline_segment_json` | `folders/{id}/segments/{seg_id}/baseline.json` | Minimal per-segment baseline |
+| `analysis_json` | `folders/{id}/analysis/analysis.json` | Aggregate analysis referencing all segments |
+| `analysis_md` | `folders/{id}/analysis/analysis.md` | Optional Markdown summary |
+| `keyframes_segment_json` | `folders/{id}/segments/{seg_id}/keyframes.json` | Optional keyframes |
+| `ocr_segment_json` | `folders/{id}/segments/{seg_id}/ocr.json` | Optional OCR |
+| `transcript_segment_json` | `folders/{id}/segments/{seg_id}/transcript.json` | Optional transcript |
+| `events_segment_json` | `folders/{id}/segments/{seg_id}/events.json` | Optional events |
+| `segment_summary_json` | `folders/{id}/segments/{seg_id}/summary.json` | Optional segment summary |
+
+### Optional analyses
+
+To request optional per-segment analyses, include `options` in the job request:
+
+```json
+{
+  "type": "analyze",
+  "options": {
+    "additional_analysis": {
+      "enabled": true,
+      "keyframes": true,
+      "ocr": false,
+      "transcript": true,
+      "events": false,
+      "segment_summaries": false
+    }
+  }
+}
+```
+
+When `enabled=true`, an `analyze_optional` job is automatically enqueued after
+the baseline analyze job succeeds. The optional job processes each segment for
+the enabled toggle types and is independently resumable via its own cursor.
+
+If `options` is omitted entirely, all optional analyses are disabled.
+Individual toggles that are absent default to `false`.
+
+### Resumability
+
+Both `analyze` and `analyze_optional` checkpoint to `jobs.analyze_cursor_segment_index`.
+Killing the worker mid-step and restarting resumes from the last committed
+checkpoint. Each step processes segments until `ANALYZE_STEP_MAX_SECONDS` is
+reached, then re-enqueues itself.
