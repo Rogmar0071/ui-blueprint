@@ -46,6 +46,7 @@
     <!-- Project rename / delete actions -->
     <string name="action_rename_project">Rename project</string>
     <string name="action_delete_project">Delete project</string>
+    <string name="folder_row_menu_description">More options</string>
     <string name="dialog_rename_title">Rename project</string>
     <string name="dialog_rename_hint">Project name</string>
     <string name="dialog_delete_title">Delete project?</string>
