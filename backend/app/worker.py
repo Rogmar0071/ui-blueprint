@@ -275,7 +275,10 @@ def _extract_frames_chunk(
         "-y",
         pattern,
     ]
-    subprocess.run(cmd, capture_output=True, timeout=_ANALYZE_STEP_MAX_SECONDS_DEFAULT * 2)
+    # Allow double the per-step budget for the ffmpeg subprocess itself (I/O
+    # overhead on top of decode time) so it is not killed prematurely.
+    step_max = int(os.environ.get("ANALYZE_STEP_MAX_SECONDS", _ANALYZE_STEP_MAX_SECONDS_DEFAULT))
+    subprocess.run(cmd, capture_output=True, timeout=step_max * 2)
 
     produced = sorted(
         os.path.join(out_dir, f)
@@ -327,7 +330,8 @@ def _analyze_prepare(job_id: str, folder_id: str) -> None:
     if duration_s > 0:
         total_frames = max(1, math.ceil(duration_s * desired_fps))
     else:
-        total_frames = None  # unknown; will stop when ffmpeg produces nothing
+        # Unknown duration; extraction will continue until ffmpeg produces no more frames.
+        total_frames = None
 
     _update_job(
         job_id,
