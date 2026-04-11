@@ -10,7 +10,8 @@ Job types
 ---------
 analyze    Resumable Pipeline v1: streams clip to disk, extracts frames in
            bounded steps, persists checkpoints, and re-enqueues until done.
-           Stages: prepare → frames (N steps) → summarize.
+           Stages: prepare → frames (N steps) → [optional_keyframes] → summarize.
+           Optional stages are controlled by per-job options set at enqueue time.
 
 blueprint  Compile a blueprint from an existing analysis_json artifact,
            producing blueprint_json + blueprint_md artifacts.
@@ -24,10 +25,22 @@ DATABASE_URL           Required by the job to persist status updates.
 
 Pipeline v1 env vars
 --------------------
-ANALYZE_STEP_MAX_SECONDS   Hard wall-clock budget per frames step (default 30).
-ANALYZE_FRAMES_PER_STEP    Frames extracted per step (default 5).
-ANALYZE_FRAME_FPS          Target sampling FPS for extraction (default 1).
-ANALYZE_EXTRACT_TIMEOUT_S  Timeout for the final summarize subprocess (default 900).
+ANALYZE_STEP_MAX_SECONDS    Hard wall-clock budget per frames step (default 30).
+ANALYZE_FRAMES_PER_STEP     Frames extracted per step (default 5).
+ANALYZE_FRAME_FPS           Target sampling FPS for extraction (default 1).
+ANALYZE_EXTRACT_TIMEOUT_S   Timeout for the final summarize subprocess (default 900).
+ANALYZE_ENABLE_OPTIONAL_DEFAULT  If "1", enable additional_analysis by default (default 0).
+
+Per-job options (stored in jobs.analyze_options JSON column)
+------------------------------------------------------------
+{
+  "additional_analysis": {
+    "enabled": false,       # Master switch for optional stages
+    "keyframes": false,     # Produce keyframes.json artifact
+    "ocr": false,           # (reserved, not yet implemented)
+    "transcript": false     # (reserved, not yet implemented)
+  }
+}
 """
 
 from __future__ import annotations
@@ -201,6 +214,53 @@ _EXTRACTOR_TIMEOUT_SECONDS_DEFAULT = 900
 _ANALYZE_STEP_MAX_SECONDS_DEFAULT = 30
 _ANALYZE_FRAMES_PER_STEP_DEFAULT = 5
 _ANALYZE_FRAME_FPS_DEFAULT = 1
+
+
+def _get_analyze_options(job) -> dict:
+    """
+    Return the canonical options dict for an analyze job.
+
+    Falls back to all-disabled defaults if no options were stored.
+    Honours the ``ANALYZE_ENABLE_OPTIONAL_DEFAULT`` env var as a global
+    safety switch (set to "1" to enable additional_analysis by default).
+    """
+    global_default = os.environ.get("ANALYZE_ENABLE_OPTIONAL_DEFAULT", "0") == "1"
+    defaults: dict = {
+        "additional_analysis": {
+            "enabled": global_default,
+            "keyframes": False,
+            "ocr": False,
+            "transcript": False,
+        }
+    }
+    stored = job.analyze_options
+    if not stored or not isinstance(stored, dict):
+        return defaults
+    aa_stored = stored.get("additional_analysis", {})
+    aa_defaults = defaults["additional_analysis"]
+    merged_aa = {
+        "enabled": bool(aa_stored.get("enabled", aa_defaults["enabled"])),
+        "keyframes": bool(aa_stored.get("keyframes", aa_defaults["keyframes"])),
+        "ocr": bool(aa_stored.get("ocr", aa_defaults["ocr"])),
+        "transcript": bool(aa_stored.get("transcript", aa_defaults["transcript"])),
+    }
+    return {"additional_analysis": merged_aa}
+
+
+def _optional_stages_enabled(options: dict) -> list[str]:
+    """
+    Return the list of optional stage names that should run for these options.
+
+    The returned order defines execution order between optional stages.
+    Currently supports: ``"optional_keyframes"``.
+    """
+    aa = options.get("additional_analysis", {})
+    if not aa.get("enabled", False):
+        return []
+    stages: list[str] = []
+    if aa.get("keyframes", False):
+        stages.append("optional_keyframes")
+    return stages
 
 
 def _get_ffmpeg_exe() -> str:
@@ -452,10 +512,14 @@ def _analyze_frames(job_id: str, folder_id: str, job) -> None:
     )
 
     if done_with_frames:
+        # Check options to determine next stage.
+        options = _get_analyze_options(job)
+        optional_stages = _optional_stages_enabled(options)
+        next_stage = optional_stages[0] if optional_stages else "summarize"
         progress = 80
         _update_job(
             job_id,
-            analyze_stage="summarize",
+            analyze_stage=next_stage,
             analyze_cursor_frame_index=new_cursor,
             progress=progress,
         )
@@ -471,7 +535,72 @@ def _analyze_frames(job_id: str, folder_id: str, job) -> None:
             progress=progress,
         )
 
-    # Always re-enqueue – either for next frames step or summarize stage.
+    # Always re-enqueue – either for next frames step or next stage.
+    enqueue_job(job_id, "analyze")
+
+
+def _analyze_optional_keyframes(job_id: str, folder_id: str, job) -> None:
+    """
+    Stage: optional_keyframes (progress 80 → 90).
+
+    Produces a ``keyframes.json`` artifact listing all extracted frames with
+    their storage keys and timestamps.  This stage runs only when the user
+    enables ``options.additional_analysis.keyframes = true``.
+
+    The stage is idempotent: re-running overwrites the artifact.
+    After completion it advances to the ``summarize`` stage.
+    """
+    from backend.app import storage
+
+    desired_fps = float(os.environ.get("ANALYZE_FRAME_FPS", _ANALYZE_FRAME_FPS_DEFAULT))
+    total_frames: Optional[int] = job.analyze_cursor_frame_index  # cursor = total extracted
+
+    if total_frames is None or total_frames == 0:
+        # Nothing was extracted; skip straight to summarize.
+        _update_job(job_id, analyze_stage="summarize", progress=82)
+        enqueue_job(job_id, "analyze")
+        return
+
+    frames: list[dict] = []
+    for idx in range(total_frames):
+        fname = f"frame_{idx:05d}.jpg"
+        object_key = f"folders/{folder_id}/frames/{fname}"
+        timestamp_s = round(idx / desired_fps, 3)
+        frames.append({
+            "index": idx,
+            "timestamp_s": timestamp_s,
+            "object_key": object_key,
+        })
+
+    import json as _json
+
+    keyframes_data = {
+        "version": "1.0",
+        "frame_count": total_frames,
+        "fps": desired_fps,
+        "frames": frames,
+    }
+    keyframes_bytes = _json.dumps(keyframes_data, indent=2).encode("utf-8")
+
+    try:
+        kf_key = storage.upload_bytes(
+            folder_id, "keyframes.json", keyframes_bytes, "application/json"
+        )
+        _create_artifact(folder_id, "keyframes_json", kf_key)
+        _log_event(
+            source="worker",
+            level="info",
+            event_type="artifacts.created",
+            message=f"Artifact keyframes_json created for folder {folder_id}",
+            folder_id=folder_id,
+            job_id=job_id,
+            details_json={"object_key": kf_key, "frame_count": total_frames},
+        )
+    except Exception:
+        # Storage unavailable – not fatal; continue to summarize.
+        pass
+
+    _update_job(job_id, analyze_stage="summarize", progress=85)
     enqueue_job(job_id, "analyze")
 
 
@@ -631,6 +760,8 @@ def run_analyze_step(job_id: str) -> None:
             _analyze_prepare(job_id, folder_id)
         elif stage == "frames":
             _analyze_frames(job_id, folder_id, job)
+        elif stage == "optional_keyframes":
+            _analyze_optional_keyframes(job_id, folder_id, job)
         elif stage == "summarize":
             _analyze_summarize(job_id, folder_id, job)
         else:

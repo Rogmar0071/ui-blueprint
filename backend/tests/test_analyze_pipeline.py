@@ -468,3 +468,344 @@ class TestAnalyzeStreamingDownload:
         assert mp4_bytes == [], (
             f"get_object_bytes called for MP4 in frames stage: {mp4_bytes}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: per-user options – API, persistence, and conditional execution
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeOptions:
+    """Tests covering the optional additional analysis feature:
+      - Default path unchanged when options are omitted
+      - Options are persisted in the DB and survive worker restarts
+      - Optional analysis stage executes only when enabled
+      - Pipeline routes to optional stage before summarize when enabled
+    """
+
+    # -- helpers -------------------------------------------------------------
+
+    def _make_folder(self):
+        """Create a folder with a clip_object_key and return folder_id (str)."""
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import Folder
+
+        folder_id = uuid.uuid4()
+        with Session(get_engine()) as session:
+            folder = Folder(id=folder_id, clip_object_key="folders/test/clip.mp4")
+            session.add(folder)
+            session.commit()
+        return str(folder_id)
+
+    # -- test 1 --------------------------------------------------------------
+
+    def test_default_analyze_path_unchanged_when_options_omitted(self):
+        """When no options are supplied, pipeline runs prepare → frames → summarize
+        (no optional stages) and the job reaches succeeded with progress=100."""
+        folder_id, job_id = _make_folder_and_job()
+
+        def fake_summarize(job_id_, folder_id_, job_):
+            from backend.app.worker import _update_folder_status, _update_job
+
+            _update_job(job_id_, status="succeeded", progress=100)
+            _update_folder_status(folder_id_, "done")
+
+        def fake_extract(clip_path, start_time_s, frames_per_step, desired_fps,
+                         out_dir, ffmpeg_exe, start_number):
+            p = os.path.join(out_dir, f"frame_{start_number:05d}.jpg")
+            with open(p, "wb") as fh:
+                fh.write(b"\xff\xd8\xff\xe0")
+            return [p]
+
+        with (
+            patch("backend.app.storage.get_object_to_file", side_effect=_fake_get_to_file),
+            patch("backend.app.storage.upload_bytes", side_effect=_noop_upload_bytes),
+            # 1s duration at 1fps → 1 total frame → one frames step covers it all.
+            patch("backend.app.worker._probe_video_info", return_value=(1.0, 1.0)),
+            patch("backend.app.worker._extract_frames_chunk", side_effect=fake_extract),
+            patch("backend.app.worker._analyze_summarize", side_effect=fake_summarize),
+            patch("backend.app.worker.enqueue_job"),
+            patch.dict(os.environ, {"ANALYZE_FRAMES_PER_STEP": "5", "ANALYZE_FRAME_FPS": "1"}),
+        ):
+            from backend.app.worker import run_analyze_step
+
+            run_analyze_step(job_id)   # prepare  → stage='frames'
+            run_analyze_step(job_id)   # frames   → 1 frame, cursor=1≥1 → stage='summarize'
+            run_analyze_step(job_id)   # summarize → succeeded
+
+        job = _get_job(job_id)
+        assert job.status == "succeeded"
+        assert job.progress == 100
+        # analyze_options must remain None (not set by pipeline when absent).
+        assert job.analyze_options is None
+
+    # -- test 2 --------------------------------------------------------------
+
+    def test_options_are_persisted_and_survive_retries(self, tmp_path):
+        """Options stored at enqueue time must still be readable after a
+        simulated worker restart (i.e., fresh DB read)."""
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import Folder, Job
+
+        folder_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        opts = {
+            "additional_analysis": {
+                "enabled": True,
+                "keyframes": True,
+                "ocr": False,
+                "transcript": False,
+            }
+        }
+
+        with Session(get_engine()) as session:
+            folder = Folder(id=folder_id, clip_object_key="folders/test/clip.mp4")
+            session.add(folder)
+            job = Job(
+                id=job_id,
+                folder_id=folder_id,
+                type="analyze",
+                analyze_options=opts,
+            )
+            session.add(job)
+            session.commit()
+
+        # Simulate worker restart: fresh read from DB.
+        from backend.app.worker import _get_analyze_options
+
+        loaded_job = _get_job(str(job_id))
+        options_after_restart = _get_analyze_options(loaded_job)
+
+        assert options_after_restart["additional_analysis"]["enabled"] is True
+        assert options_after_restart["additional_analysis"]["keyframes"] is True
+        assert options_after_restart["additional_analysis"]["ocr"] is False
+
+    # -- test 3 --------------------------------------------------------------
+
+    def test_optional_keyframes_stage_executes_only_when_enabled(self):
+        """With keyframes=true, the pipeline routes to optional_keyframes before
+        summarize.  With keyframes=false (default), the stage is skipped."""
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import Job
+
+        def _run_frames_step(job_id_: str, folder_id_: str, options_val: dict | None):
+            """Set up a job at the frames→done transition and run one step."""
+            jid = uuid.uuid4()
+            with Session(get_engine()) as session:
+                job = Job(
+                    id=jid,
+                    folder_id=uuid.UUID(folder_id_),
+                    type="analyze",
+                    status="running",
+                    analyze_stage="frames",
+                    analyze_cursor_frame_index=4,  # 4 of 5 extracted
+                    analyze_total_frames=5,
+                    analyze_clip_object_key="folders/test/clip.mp4",
+                    analyze_options=options_val,
+                )
+                session.add(job)
+                session.commit()
+
+            enqueue_calls: list[str] = []
+
+            def fake_extract(clip_path, start_time_s, frames_per_step, desired_fps,
+                             out_dir, ffmpeg_exe, start_number):
+                p = os.path.join(out_dir, f"frame_{start_number:05d}.jpg")
+                with open(p, "wb") as fh:
+                    fh.write(b"\xff\xd8\xff\xe0")
+                return [p]  # produce last frame
+
+            with (
+                patch("backend.app.storage.get_object_to_file", side_effect=_fake_get_to_file),
+                patch("backend.app.storage.upload_bytes", side_effect=_noop_upload_bytes),
+                patch("backend.app.worker._extract_frames_chunk", side_effect=fake_extract),
+                patch(
+                    "backend.app.worker.enqueue_job",
+                    side_effect=lambda jid, jtype: enqueue_calls.append(jid),
+                ),
+                patch.dict(os.environ, {"ANALYZE_FRAMES_PER_STEP": "1", "ANALYZE_FRAME_FPS": "1"}),
+            ):
+                from backend.app.worker import run_analyze_step
+
+                run_analyze_step(str(jid))
+
+            loaded = _get_job(str(jid))
+            return loaded.analyze_stage
+
+        folder_id = str(self._make_folder())
+
+        # Without keyframes option: frames→done should go to summarize directly.
+        next_stage_no_opt = _run_frames_step(None, folder_id, None)
+        assert next_stage_no_opt == "summarize", (
+            f"Expected 'summarize' without keyframes option, got {next_stage_no_opt!r}"
+        )
+
+        # With keyframes enabled: frames→done should go to optional_keyframes first.
+        opts_with_kf = {
+            "additional_analysis": {"enabled": True, "keyframes": True}
+        }
+        next_stage_with_opt = _run_frames_step(None, folder_id, opts_with_kf)
+        assert next_stage_with_opt == "optional_keyframes", (
+            f"Expected 'optional_keyframes' with keyframes enabled, got {next_stage_with_opt!r}"
+        )
+
+    # -- test 4 --------------------------------------------------------------
+
+    def test_optional_keyframes_stage_produces_artifact(self):
+        """Running optional_keyframes must produce a keyframes.json artifact
+        and advance the stage to 'summarize'."""
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import Artifact, Folder, Job
+
+        folder_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        opts = {"additional_analysis": {"enabled": True, "keyframes": True}}
+
+        with Session(get_engine()) as session:
+            folder = Folder(id=folder_id, clip_object_key="folders/test/clip.mp4")
+            session.add(folder)
+            job = Job(
+                id=job_id,
+                folder_id=folder_id,
+                type="analyze",
+                status="running",
+                analyze_stage="optional_keyframes",
+                analyze_cursor_frame_index=3,   # 3 frames extracted
+                analyze_total_frames=3,
+                analyze_clip_object_key="folders/test/clip.mp4",
+                analyze_options=opts,
+            )
+            session.add(job)
+            session.commit()
+
+        uploaded: dict[str, bytes] = {}
+
+        def fake_upload_bytes(folder_id_, filename, data, content_type="application/octet-stream"):
+            key = f"folders/{folder_id_}/{filename}"
+            uploaded[key] = data
+            return key
+
+        with (
+            patch("backend.app.storage.upload_bytes", side_effect=fake_upload_bytes),
+            patch("backend.app.worker.enqueue_job"),
+        ):
+            from backend.app.worker import run_analyze_step
+
+            run_analyze_step(str(job_id))
+
+        # Stage must now be 'summarize'.
+        job_after = _get_job(str(job_id))
+        assert job_after.analyze_stage == "summarize"
+
+        # keyframes.json must have been uploaded.
+        kf_key = f"folders/{folder_id}/keyframes.json"
+        assert kf_key in uploaded, (
+            f"keyframes.json not in uploaded: {list(uploaded.keys())}"
+        )
+        import json as _json
+
+        kf_data = _json.loads(uploaded[kf_key])
+        assert kf_data["frame_count"] == 3
+        assert len(kf_data["frames"]) == 3
+
+        # A keyframes_json artifact must have been created in DB.
+        with Session(get_engine()) as session:
+            from sqlmodel import select
+
+            artifact = session.exec(
+                select(Artifact)
+                .where(Artifact.folder_id == folder_id)
+                .where(Artifact.type == "keyframes_json")
+            ).first()
+        assert artifact is not None, "keyframes_json artifact not found in DB"
+
+    # -- test 5 --------------------------------------------------------------
+
+    def test_pipeline_with_options_persisted_via_api(self):
+        """POST /v1/folders/{id}/jobs with options must persist them on the Job
+        row so the worker can read them."""
+        from fastapi.testclient import TestClient
+
+        import backend.app.main as m
+        from backend.app.main import app
+
+        token = "test-secret-key"
+        m.API_KEY = token
+        client = TestClient(app, raise_server_exceptions=True)
+
+        # Create folder first via API.
+        folder_resp = client.post(
+            "/v1/folders",
+            json={"title": "Test folder"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert folder_resp.status_code == 201
+        # The folder create response is the folder dict directly (not nested).
+        folder_id = folder_resp.json()["id"]
+
+        # Enqueue an analyze job WITH options.
+        job_resp = client.post(
+            f"/v1/folders/{folder_id}/jobs",
+            json={
+                "type": "analyze",
+                "options": {
+                    "additional_analysis": {
+                        "enabled": True,
+                        "keyframes": True,
+                    }
+                },
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert job_resp.status_code == 202, job_resp.text
+        body = job_resp.json()
+        assert "job" in body
+        returned_options = body["job"]["options"]
+        assert returned_options is not None, "options not returned in response"
+        assert returned_options["additional_analysis"]["enabled"] is True
+        assert returned_options["additional_analysis"]["keyframes"] is True
+
+        # Verify options are persisted in DB.
+        job_id = body["job"]["id"]
+        loaded = _get_job(job_id)
+        assert loaded.analyze_options is not None
+        assert loaded.analyze_options["additional_analysis"]["enabled"] is True
+        assert loaded.analyze_options["additional_analysis"]["keyframes"] is True
+
+    def test_unknown_options_key_returns_400(self):
+        """POSTing an unknown key inside options must return 400."""
+        from fastapi.testclient import TestClient
+
+        import backend.app.main as m
+        from backend.app.main import app
+
+        token = "test-secret-key"
+        m.API_KEY = token
+        client = TestClient(app, raise_server_exceptions=True)
+
+        folder_resp = client.post(
+            "/v1/folders",
+            json={"title": "Test"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        folder_id = folder_resp.json()["id"]
+
+        resp = client.post(
+            f"/v1/folders/{folder_id}/jobs",
+            json={
+                "type": "analyze",
+                "options": {
+                    "unknown_option": True,
+                },
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"

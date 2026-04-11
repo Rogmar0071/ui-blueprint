@@ -161,6 +161,12 @@ class Job(SQLModel, table=True):
     analyze_clip_object_key: Optional[str] = Field(
         default=None, sa_column=Column(sa.Text, nullable=True)
     )
+    # User-selected per-job options (JSON).  Persisted at enqueue time and
+    # read by the pipeline to decide which optional stages to run.
+    # Schema: {"additional_analysis": {"enabled": bool, "keyframes": bool, ...}}
+    analyze_options: Optional[Any] = Field(
+        default=None, sa_column=Column(sa.JSON, nullable=True)
+    )
 
     def __init__(self, **data):
         if "created_at" not in data or data["created_at"] is None:

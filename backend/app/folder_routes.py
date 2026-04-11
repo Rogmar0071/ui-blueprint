@@ -146,6 +146,7 @@ def _job_dict(job) -> dict[str, Any]:
         "progress": job.progress,
         "error": job.error,
         "rq_job_id": job.rq_job_id,
+        "options": job.analyze_options,
         "created_at": _dt(job.created_at),
         "updated_at": _dt(job.updated_at),
     }
@@ -912,7 +913,18 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
 
     Request body::
 
-        {"type": "analyze"}   or   {"type": "blueprint"}
+        {"type": "analyze"}
+        {"type": "analyze", "options": {
+            "additional_analysis": {"enabled": true, "keyframes": true}}}
+        {"type": "blueprint"}
+
+    **options** (analyze only, optional):
+      - ``additional_analysis.enabled`` (bool, default ``false``): master switch.
+      - ``additional_analysis.keyframes`` (bool, default ``false``): produce
+        ``keyframes.json`` artifact listing extracted frames with timestamps.
+
+    Omitting ``options`` is equivalent to ``{"additional_analysis": {"enabled": false}}``.
+    All unknown keys inside ``options`` are rejected with HTTP 400.
 
     Idempotency: if an ``analyze`` job for this folder is already ``queued``
     or ``running``, the existing job is returned (HTTP 202) without creating a
@@ -932,6 +944,47 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
             status_code=400,
             detail="type must be 'analyze' or 'blueprint'",
         )
+
+    # Validate and normalise the optional per-job options block.
+    analyze_options: dict[str, Any] | None = None
+    if job_type == "analyze" and "options" in body:
+        raw_options = body["options"]
+        if not isinstance(raw_options, dict):
+            raise HTTPException(status_code=400, detail="options must be a JSON object")
+
+        # Only known top-level keys are allowed.
+        _OPTIONS_ALLOWED_KEYS = {"additional_analysis"}
+        unknown_top = set(raw_options) - _OPTIONS_ALLOWED_KEYS
+        if unknown_top:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown options keys: {sorted(unknown_top)}. "
+                f"Allowed: {sorted(_OPTIONS_ALLOWED_KEYS)}",
+            )
+
+        aa = raw_options.get("additional_analysis", {})
+        if not isinstance(aa, dict):
+            raise HTTPException(
+                status_code=400, detail="options.additional_analysis must be a JSON object"
+            )
+        _AA_ALLOWED_KEYS = {"enabled", "keyframes", "ocr", "transcript"}
+        unknown_aa = set(aa) - _AA_ALLOWED_KEYS
+        if unknown_aa:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown additional_analysis keys: {sorted(unknown_aa)}. "
+                f"Allowed: {sorted(_AA_ALLOWED_KEYS)}",
+            )
+
+        # Build canonical options dict (only known fields; booleans).
+        analyze_options = {
+            "additional_analysis": {
+                "enabled": bool(aa.get("enabled", False)),
+                "keyframes": bool(aa.get("keyframes", False)),
+                "ocr": bool(aa.get("ocr", False)),
+                "transcript": bool(aa.get("transcript", False)),
+            }
+        }
 
     # Run watchdog before the dedupe check so stalled jobs are cleared first.
     _mark_stalled_jobs(db, fid)
@@ -959,7 +1012,7 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
             )
             return JSONResponse(content={"job": _job_dict(existing)}, status_code=202)
 
-    job = Job(folder_id=fid, type=job_type)
+    job = Job(folder_id=fid, type=job_type, analyze_options=analyze_options)
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -980,7 +1033,7 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
         folder_id=str(fid),
         job_id=str(job.id),
         rq_job_id=rq_id,
-        details_json={"job_type": job_type},
+        details_json={"job_type": job_type, "options": analyze_options},
     )
     return JSONResponse(content={"job": _job_dict(job)}, status_code=202)
 
