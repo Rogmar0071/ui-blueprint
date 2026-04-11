@@ -12,10 +12,9 @@ POST /v1/global/messages/{id}/edit Alias for POST /api/chat/{id}/edit.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 

@@ -47,7 +47,10 @@ class TavilyKeyMissing(RuntimeError):
 
 # Supports both TAVILY_CACHE_TTL_S (preferred) and the older name.
 def _cache_ttl() -> int:
-    val = os.environ.get("TAVILY_CACHE_TTL_S") or os.environ.get("WEB_SEARCH_CACHE_TTL_SECONDS", "600")
+    val = (
+        os.environ.get("TAVILY_CACHE_TTL_S")
+        or os.environ.get("WEB_SEARCH_CACHE_TTL_SECONDS", "600")
+    )
     return int(val)
 
 
