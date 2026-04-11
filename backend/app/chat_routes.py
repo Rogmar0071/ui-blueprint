@@ -67,7 +67,7 @@ _OPS_CONTEXT_HEADER = (
 
 # Keywords that indicate the user wants up-to-date / current information.
 _RECENCY_PATTERN = re.compile(
-    r"\b(latest|current|today|now|recent|news|price|release|ceo|just|trending|"
+    r"\b(latest|current|today|now|recent|news|price|release|just|trending|"
     r"this week|this month|right now|up.?to.?date|happening)\b",
     re.IGNORECASE,
 )

@@ -218,7 +218,10 @@ class ChatMessageAdapter(
      */
     private fun splitArtifactContent(content: String): Pair<String, String?> {
         val lines = content.lines()
-        val firstArtifactIdx = lines.indexOfFirst { it.trimStart().startsWith("ARTIFACT_") }
+        val firstArtifactIdx = lines.indexOfFirst {
+            val trimmed = it.trimStart()
+            trimmed.startsWith("ARTIFACT_") && trimmed.contains(":")
+        }
         if (firstArtifactIdx < 0) return content to null
 
         val preamble = lines.take(firstArtifactIdx).joinToString("\n")
