@@ -13,9 +13,13 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.uiblueprint.android.databinding.ActivityFolderDetailBinding
@@ -75,6 +79,9 @@ class FolderDetailActivity : AppCompatActivity() {
     private var lastClipPath: String? = null
     private var lastRecordingDurationMs: Int? = null
     private var lastGalleryUri: Uri? = null
+
+    /** clip_object_key from the last successful loadFolder() response. */
+    private var folderClipObjectKey: String? = null
 
     // MediaProjection permission launcher.
     private val projectionLauncher = registerForActivityResult(
@@ -187,6 +194,120 @@ class FolderDetailActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean {
         finish()
         return true
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_folder_detail, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            R.id.action_rename_project -> {
+                showRenameDialog()
+                true
+            }
+            R.id.action_delete_project -> {
+                showDeleteDialog()
+                true
+            }
+            else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Rename / Delete from overflow menu
+    // -------------------------------------------------------------------------
+
+    private fun showRenameDialog() {
+        val currentTitle = binding.tvFolderTitle.text?.toString() ?: ""
+        val editText = EditText(this).apply {
+            hint = getString(R.string.dialog_rename_hint)
+            setText(currentTitle)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_rename_title))
+            .setView(editText)
+            .setPositiveButton(getString(R.string.dialog_btn_rename)) { _, _ ->
+                val newTitle = editText.text.toString().trim()
+                if (newTitle.isBlank()) {
+                    Toast.makeText(this, getString(R.string.error_title_empty), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                callRenameFolder(newTitle)
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    private fun showDeleteDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_delete_title))
+            .setMessage(getString(R.string.dialog_delete_message))
+            .setPositiveButton(getString(R.string.dialog_btn_delete)) { _, _ ->
+                callDeleteFolder()
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    private fun callRenameFolder(newTitle: String) {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val body = JSONObject().put("title", newTitle).toString()
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId")
+            .patch(body)
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        executor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            loadFolder()
+                        } else {
+                            Toast.makeText(this, getString(R.string.error_rename_failed), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_rename_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun callDeleteFolder() {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId")
+            .delete()
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        executor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            finish()
+                        } else {
+                            Toast.makeText(this, getString(R.string.error_delete_failed), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_delete_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -462,14 +583,64 @@ class FolderDetailActivity : AppCompatActivity() {
     // -------------------------------------------------------------------------
 
     private fun onAnalyzeClicked() {
-        // Safety guard: the button should already be disabled when a job is active,
-        // but double-check here to prevent duplicate uploads / duplicate analyze jobs.
-        val clipPath = lastClipPath
-        val galleryUri = lastGalleryUri
-        when {
-            clipPath != null -> uploadClipFromFile(File(clipPath), lastRecordingDurationMs)
-            galleryUri != null -> uploadClipFromUri(galleryUri)
-            else -> Toast.makeText(this, getString(R.string.status_no_clip), Toast.LENGTH_SHORT).show()
+        // Safety guard: button should already be disabled while a job is active,
+        // but check here to prevent accidental duplicate jobs.
+        if (!binding.btnAnalyze.isEnabled) {
+            Toast.makeText(this, getString(R.string.toast_analyze_already_running), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // If no clip exists on the backend yet, ask the user to upload first.
+        val hasClip = lastClipPath != null || lastGalleryUri != null || !folderClipObjectKey.isNullOrBlank()
+        if (!hasClip) {
+            Toast.makeText(this, getString(R.string.toast_upload_clip_first), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Re-queue an analyze job without re-uploading the clip.
+        enqueueAnalyzeJob()
+    }
+
+    /**
+     * POST /v1/folders/{id}/jobs with type=analyze to (re-)run analysis.
+     * Does NOT upload the clip — upload only happens via Record or Pick from Gallery.
+     */
+    private fun enqueueAnalyzeJob() {
+        binding.btnAnalyze.isEnabled = false
+
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val body = JSONObject().put("type", "analyze").toString()
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId/jobs")
+            .post(body)
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        executor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            loadFolder()
+                            startPolling()
+                        } else {
+                            binding.btnAnalyze.isEnabled = true
+                            Toast.makeText(
+                                this,
+                                "Failed to start analyze: HTTP ${resp.code}",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+            } catch (e: IOException) {
+                runOnUiThread {
+                    binding.btnAnalyze.isEnabled = true
+                    Toast.makeText(this, "Failed to start analyze: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -556,13 +727,18 @@ class FolderDetailActivity : AppCompatActivity() {
     }
 
     private fun renderFolder(json: JSONObject) {
-        val title = json.optString("title", "")
-        val shortId = folderId.take(8)
-        binding.tvFolderTitle.text = if (title.isNotEmpty()) title else "Folder $shortId"
+        val title = json.optString("title", "").trim()
+        binding.tvFolderTitle.text = if (title.isNotEmpty()) title else getString(R.string.label_untitled_project)
         binding.tvFolderStatus.text = getString(R.string.label_folder_status, json.optString("status", "?"))
         binding.tvFolderId.text = getString(R.string.label_folder_id, folderId)
 
-        // Jobs
+        // Track clip_object_key from server so Analyze can be re-run across sessions.
+        val serverClipKey = json.optString("clip_object_key", "")
+        if (serverClipKey.isNotBlank()) {
+            folderClipObjectKey = serverClipKey
+        }
+
+        // Jobs (newest-first – backend already returns desc)
         val jobs = json.optJSONArray("jobs")
         binding.tvJobs.text = if (jobs == null || jobs.length() == 0) {
             getString(R.string.folder_no_jobs)
@@ -614,8 +790,8 @@ class FolderDetailActivity : AppCompatActivity() {
             startPolling()
         } else {
             stopPolling()
-            // Re-enable Analyze (for re-run) only when the user has a clip in this session.
-            val hasClip = lastClipPath != null || lastGalleryUri != null
+            // Re-enable Analyze when a clip exists (from this session or a previous upload).
+            val hasClip = lastClipPath != null || lastGalleryUri != null || !folderClipObjectKey.isNullOrBlank()
             binding.btnAnalyze.isEnabled = hasClip
             binding.btnAnalyze.text = getString(R.string.btn_analyze)
         }

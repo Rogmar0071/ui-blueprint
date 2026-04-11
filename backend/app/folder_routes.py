@@ -8,6 +8,7 @@ Endpoints
 POST   /v1/folders                              create folder                       [auth]
 GET    /v1/folders                              list folders                        [auth]
 GET    /v1/folders/{folder_id}                  get folder detail                   [auth]
+PATCH  /v1/folders/{folder_id}                  rename folder                       [auth]
 DELETE /v1/folders/{folder_id}                  delete folder (cascade)             [auth]
 POST   /v1/folders/{folder_id}/clip             upload clip to folder               [auth]
 GET    /v1/folders/{folder_id}/artifacts/{id}   presigned/streaming artifact URL    [auth]
@@ -263,6 +264,49 @@ def delete_folder(folder_id: str, db=Depends(_db_session)) -> None:
 
     db.delete(folder)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# PATCH /v1/folders/{folder_id}  — rename folder
+# ---------------------------------------------------------------------------
+
+_TITLE_MAX_LEN = 120
+
+
+@router.patch("/{folder_id}", dependencies=[Depends(require_auth)])
+def patch_folder(
+    folder_id: str, body: dict[str, Any] = None, db=Depends(_db_session)
+) -> JSONResponse:
+    """Rename a folder.
+
+    Request body::
+
+        {"title": "New name"}
+
+    Rules:
+    - ``title`` is required.
+    - Whitespace is trimmed.
+    - Blank title after trim → HTTP 422.
+    - Title exceeding 120 characters → HTTP 422.
+    """
+    fid = _parse_uuid(folder_id, "folder_id")
+    folder = _folder_or_404(db, fid)
+
+    raw_title = str((body or {}).get("title", "")).strip()
+    if not raw_title:
+        raise HTTPException(status_code=422, detail="title must not be blank")
+    if len(raw_title) > _TITLE_MAX_LEN:
+        raise HTTPException(
+            status_code=422,
+            detail=f"title must not exceed {_TITLE_MAX_LEN} characters",
+        )
+
+    folder.title = raw_title
+    folder.updated_at = datetime.now(timezone.utc)
+    db.add(folder)
+    db.commit()
+    db.refresh(folder)
+    return JSONResponse(content=_folder_dict(folder))
 
 
 # ---------------------------------------------------------------------------

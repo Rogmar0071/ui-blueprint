@@ -4,8 +4,10 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.MenuItem
 import android.view.View
+import android.widget.EditText
 import android.widget.Toast
 import androidx.appcompat.app.ActionBarDrawerToggle
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -30,11 +32,11 @@ import java.util.concurrent.Executors
  * All recording, gallery-pick, and analyze actions have been moved to
  * FolderDetailActivity so that each clip is automatically associated with a project.
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), FolderAdapter.FolderActionListener {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var drawerToggle: ActionBarDrawerToggle
-    private val folderAdapter = FolderAdapter()
+    private val folderAdapter = FolderAdapter(this)
 
     private val chatExecutor = Executors.newSingleThreadExecutor { Thread(it, "GlobalChat-worker") }
     private val projectExecutor = Executors.newSingleThreadExecutor { Thread(it, "NewProject-worker") }
@@ -342,6 +344,100 @@ class MainActivity : AppCompatActivity() {
     }
 
     data class FolderItem(val id: String, val status: String, val label: String)
+
+    // -------------------------------------------------------------------------
+    // FolderActionListener – Rename / Delete
+    // -------------------------------------------------------------------------
+
+    override fun onRenameFolder(folderId: String, currentTitle: String) {
+        val editText = EditText(this).apply {
+            hint = getString(R.string.dialog_rename_hint)
+            setText(currentTitle)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_rename_title))
+            .setView(editText)
+            .setPositiveButton(getString(R.string.dialog_btn_rename)) { _, _ ->
+                val newTitle = editText.text.toString().trim()
+                if (newTitle.isBlank()) {
+                    Toast.makeText(this, getString(R.string.error_title_empty), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                callRenameFolder(folderId, newTitle)
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    override fun onDeleteFolder(folderId: String) {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_delete_title))
+            .setMessage(getString(R.string.dialog_delete_message))
+            .setPositiveButton(getString(R.string.dialog_btn_delete)) { _, _ ->
+                callDeleteFolder(folderId)
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    private fun callRenameFolder(folderId: String, newTitle: String) {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val body = JSONObject().put("title", newTitle).toString()
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId")
+            .patch(body)
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        projectExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            loadFolders()
+                        } else {
+                            Toast.makeText(this, getString(R.string.error_rename_failed), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_rename_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun callDeleteFolder(folderId: String) {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId")
+            .delete()
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        projectExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            loadFolders()
+                        } else {
+                            Toast.makeText(this, getString(R.string.error_delete_failed), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_delete_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     companion object {
         const val STATUS_SAVED = "saved"

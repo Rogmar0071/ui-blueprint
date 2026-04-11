@@ -43,4 +43,21 @@
     <string name="folder_no_jobs">No jobs yet.</string>
     <string name="folder_no_artifacts">No artifacts yet.</string>
     <string name="folder_chat_retrying">(Retrying %1$d/%2$d…)</string>
+    <!-- Project rename / delete actions -->
+    <string name="action_rename_project">Rename project</string>
+    <string name="action_delete_project">Delete project</string>
+    <string name="folder_row_menu_description">More options</string>
+    <string name="dialog_rename_title">Rename project</string>
+    <string name="dialog_rename_hint">Project name</string>
+    <string name="dialog_delete_title">Delete project?</string>
+    <string name="dialog_delete_message">This cannot be undone.</string>
+    <string name="dialog_btn_rename">Rename</string>
+    <string name="dialog_btn_delete">Delete</string>
+    <string name="dialog_btn_cancel">Cancel</string>
+    <string name="error_title_empty">Name must not be blank.</string>
+    <string name="error_rename_failed">Rename failed.</string>
+    <string name="error_delete_failed">Delete failed.</string>
+    <string name="label_untitled_project">Untitled project</string>
+    <string name="toast_analyze_already_running">Analyze already running</string>
+    <string name="toast_upload_clip_first">Upload a clip first</string>
 </resources>

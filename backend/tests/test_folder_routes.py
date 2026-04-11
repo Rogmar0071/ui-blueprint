@@ -192,6 +192,74 @@ class TestDeleteFolder:
 
 
 # ---------------------------------------------------------------------------
+# PATCH /v1/folders/{id}  — rename
+# ---------------------------------------------------------------------------
+
+
+class TestPatchFolder:
+    def test_rename_succeeds(self, client: TestClient) -> None:
+        folder = _create_folder(client, "Old Title")
+        fid = folder["id"]
+        resp = client.patch(f"/v1/folders/{fid}", json={"title": "New Title"}, headers=_auth())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == fid
+        assert body["title"] == "New Title"
+
+    def test_rename_trims_whitespace(self, client: TestClient) -> None:
+        folder = _create_folder(client, "Original")
+        fid = folder["id"]
+        resp = client.patch(f"/v1/folders/{fid}", json={"title": "  Trimmed  "}, headers=_auth())
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Trimmed"
+
+    def test_rename_blank_title_returns_422(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        resp = client.patch(f"/v1/folders/{fid}", json={"title": "   "}, headers=_auth())
+        assert resp.status_code == 422
+
+    def test_rename_empty_title_returns_422(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        resp = client.patch(f"/v1/folders/{fid}", json={"title": ""}, headers=_auth())
+        assert resp.status_code == 422
+
+    def test_rename_title_too_long_returns_422(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        resp = client.patch(
+            f"/v1/folders/{fid}", json={"title": "x" * 121}, headers=_auth()
+        )
+        assert resp.status_code == 422
+
+    def test_rename_title_max_length_succeeds(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        resp = client.patch(
+            f"/v1/folders/{fid}", json={"title": "x" * 120}, headers=_auth()
+        )
+        assert resp.status_code == 200
+
+    def test_rename_updates_title_in_get(self, client: TestClient) -> None:
+        folder = _create_folder(client, "Before")
+        fid = folder["id"]
+        client.patch(f"/v1/folders/{fid}", json={"title": "After"}, headers=_auth())
+        resp = client.get(f"/v1/folders/{fid}", headers=_auth())
+        assert resp.json()["title"] == "After"
+
+    def test_rename_nonexistent_returns_404(self, client: TestClient) -> None:
+        resp = client.patch(
+            f"/v1/folders/{uuid.uuid4()}", json={"title": "X"}, headers=_auth()
+        )
+        assert resp.status_code == 404
+
+    def test_rename_requires_auth(self, client: TestClient) -> None:
+        resp = client.patch(f"/v1/folders/{uuid.uuid4()}", json={"title": "X"})
+        assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/folders/{id}/clip  — upload (no R2 configured → 502)
 # ---------------------------------------------------------------------------
 
