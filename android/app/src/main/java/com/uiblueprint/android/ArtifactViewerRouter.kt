@@ -1,7 +1,10 @@
 package com.uiblueprint.android
 
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
@@ -70,18 +73,18 @@ object ArtifactViewerRouter {
     private fun launchViewer(context: Context, type: String, url: String) {
         if (type == "clip") {
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(android.net.Uri.parse(url), "video/mp4")
-                if (context !is android.app.Activity) {
+                setDataAndType(Uri.parse(url), "video/mp4")
+                if (context !is Activity) {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
             }
             try {
                 context.startActivity(intent)
-            } catch (e: android.content.ActivityNotFoundException) {
-                android.widget.Toast.makeText(
+            } catch (e: ActivityNotFoundException) {
+                Toast.makeText(
                     context,
                     context.getString(R.string.artifact_url_unavailable),
-                    android.widget.Toast.LENGTH_SHORT,
+                    Toast.LENGTH_SHORT,
                 ).show()
             }
             return
@@ -97,7 +100,7 @@ object ArtifactViewerRouter {
         val intent = Intent(context, activityClass).apply {
             putExtra(EXTRA_ARTIFACT_URL, url)
             putExtra(EXTRA_ARTIFACT_TITLE, type)
-            if (context !is android.app.Activity) {
+            if (context !is Activity) {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
         }
