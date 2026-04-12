@@ -3,4 +3,10 @@
     <!-- Minimum width of the Projects drawer. On wide screens the drawer may
          expand to half the screen width; this value is the floor. -->
     <dimen name="drawer_min_width">320dp</dimen>
+    <dimen name="input_bar_height">52dp</dimen>
+    <dimen name="input_bar_radius">26dp</dimen>
+    <dimen name="icon_btn_size">40dp</dimen>
+    <dimen name="send_btn_size">36dp</dimen>
+    <dimen name="card_radius">12dp</dimen>
+    <dimen name="message_card_radius">18dp</dimen>
 </resources>

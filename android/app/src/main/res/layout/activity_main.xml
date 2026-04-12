@@ -1,30 +1,77 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.drawerlayout.widget.DrawerLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/drawerLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/black"
     tools:context=".MainActivity">
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         Main content: global chat
+         Main content
          ═══════════════════════════════════════════════════════════════════ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical">
+        android:orientation="vertical"
+        android:background="@color/black">
 
+        <!-- Custom dark toolbar row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="@color/black"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:gravity="center_vertical">
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnDrawerToggle"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_sort_by_size"
+                android:contentDescription="@string/drawer_open"
+                app:tint="@color/icon_tint"
+                android:scaleType="center" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:paddingStart="8dp"
+                android:text="@string/app_name"
+                android:textColor="@color/text_primary"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnSearch"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_search"
+                android:contentDescription="@string/btn_search"
+                app:tint="@color/icon_tint"
+                android:scaleType="center" />
+        </LinearLayout>
+
+        <!-- Status strip -->
         <TextView
             android:id="@+id/tvStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:paddingStart="16dp"
             android:paddingEnd="16dp"
-            android:paddingTop="8dp"
+            android:paddingTop="2dp"
             android:text="@string/status_idle"
-            android:textSize="12sp"
-            android:alpha="0.7" />
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
 
         <TextView
             android:id="@+id/tvBackendUrl"
@@ -33,26 +80,9 @@
             android:paddingStart="16dp"
             android:paddingEnd="16dp"
             android:paddingBottom="4dp"
+            android:textColor="@color/text_hint"
             android:textSize="11sp"
-            android:alpha="0.5"
             tools:text="Backend: https://ui-blueprint-backend.onrender.com" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:layout_marginVertical="4dp"
-            android:background="?attr/colorOnSurface"
-            android:alpha="0.12" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:paddingTop="4dp"
-            android:text="@string/label_global_chat"
-            android:textStyle="bold"
-            android:textSize="13sp" />
 
         <!-- Multi-select contextual toolbar (hidden by default) -->
         <LinearLayout
@@ -65,7 +95,7 @@
             android:paddingTop="4dp"
             android:paddingBottom="4dp"
             android:gravity="center_vertical"
-            android:background="?attr/colorSurfaceVariant"
+            android:background="@color/surface"
             android:visibility="gone">
 
             <TextView
@@ -73,6 +103,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:textColor="@color/text_primary"
                 android:textStyle="bold"
                 android:textSize="13sp"
                 tools:text="2 selected" />
@@ -83,6 +114,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="36dp"
                 android:text="@string/action_select_all"
+                android:textColor="@color/text_primary"
                 android:textSize="12sp" />
 
             <com.google.android.material.button.MaterialButton
@@ -91,6 +123,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="36dp"
                 android:text="@string/action_copy"
+                android:textColor="@color/text_primary"
                 android:textSize="12sp" />
 
             <com.google.android.material.button.MaterialButton
@@ -99,6 +132,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="36dp"
                 android:text="@string/action_share"
+                android:textColor="@color/text_primary"
                 android:textSize="12sp" />
 
             <com.google.android.material.button.MaterialButton
@@ -107,15 +141,30 @@
                 android:layout_width="wrap_content"
                 android:layout_height="36dp"
                 android:text="@string/action_cancel"
+                android:textColor="@color/text_primary"
                 android:textSize="12sp" />
         </LinearLayout>
 
-        <!-- Message list (replaces the old ScrollView+TextView) -->
+        <!-- Global Chat section label -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="2dp"
+            android:text="@string/label_global_chat"
+            android:textColor="@color/text_secondary"
+            android:textStyle="bold"
+            android:textSize="13sp" />
+
+        <!-- Message list -->
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rvChatMessages"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
+            android:background="@color/black"
             android:clipToPadding="false"
             android:paddingBottom="8dp" />
 
@@ -127,6 +176,7 @@
             android:paddingStart="16dp"
             android:paddingEnd="16dp"
             android:paddingTop="4dp"
+            android:paddingBottom="4dp"
             android:gravity="center_vertical">
 
             <TextView
@@ -134,8 +184,8 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="@string/label_agent_mode"
-                android:textSize="12sp"
-                android:alpha="0.8" />
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
 
             <com.google.android.material.switchmaterial.SwitchMaterial
                 android:id="@+id/switchAgentMode"
@@ -143,27 +193,64 @@
                 android:layout_height="wrap_content" />
         </LinearLayout>
 
+        <!-- Input bar pill -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:padding="8dp">
+            android:background="@drawable/bg_input_bar"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:layout_marginBottom="8dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:gravity="center_vertical">
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnAttach"
+            android:layout_width="@dimen/icon_btn_size"
+            android:layout_height="@dimen/icon_btn_size"
+            android:background="@drawable/bg_circle_btn"
+            android:src="@android:drawable/ic_input_add"
+            app:tint="@color/icon_tint"
+            android:contentDescription="@string/btn_attach"
+            android:scaleType="center" />
 
             <EditText
                 android:id="@+id/etMessage"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:hint="@string/hint_chat_input"
+                android:background="@null"
+                android:textColor="@color/text_primary"
+                android:hint="@string/hint_reply_main"
                 android:inputType="textMultiLine"
-                android:maxLines="3"
-                android:layout_marginEnd="8dp" />
+                android:maxLines="4"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp" />
 
-            <com.google.android.material.button.MaterialButton
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnMic"
+                android:layout_width="@dimen/icon_btn_size"
+                android:layout_height="@dimen/icon_btn_size"
+                android:background="@drawable/bg_circle_btn"
+                android:src="@android:drawable/ic_btn_speak_now"
+                app:tint="@color/icon_tint"
+                android:contentDescription="@string/btn_mic"
+                android:scaleType="center" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnSend"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/btn_send" />
+                android:layout_width="@dimen/send_btn_size"
+                android:layout_height="@dimen/send_btn_size"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_send_btn"
+                android:src="@android:drawable/ic_menu_upload"
+                app:tint="@android:color/black"
+                android:contentDescription="@string/btn_send"
+                android:scaleType="center" />
         </LinearLayout>
     </LinearLayout>
 
@@ -176,9 +263,10 @@
         android:layout_height="match_parent"
         android:layout_gravity="start"
         android:orientation="vertical"
-        android:background="?attr/colorSurface"
+        android:background="@color/black"
         android:elevation="8dp">
 
+        <!-- Header row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -191,22 +279,25 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="@string/label_projects"
+                android:textColor="@color/text_primary"
                 android:textSize="18sp"
                 android:textStyle="bold" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnNewProject"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/btn_new_project"
-                android:textSize="13sp" />
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnCloseDrawer"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                app:tint="@color/icon_tint"
+                android:contentDescription="@string/drawer_close"
+                android:scaleType="center" />
         </LinearLayout>
 
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:background="?attr/colorOnSurface"
-            android:alpha="0.12" />
+            android:background="@color/divider" />
 
         <TextView
             android:id="@+id/tvProjectsEmpty"
@@ -214,8 +305,8 @@
             android:layout_height="wrap_content"
             android:padding="16dp"
             android:text="@string/label_projects_empty"
+            android:textColor="@color/text_secondary"
             android:textSize="13sp"
-            android:alpha="0.6"
             android:visibility="gone" />
 
         <androidx.recyclerview.widget.RecyclerView
@@ -225,6 +316,15 @@
             android:layout_weight="1"
             android:clipToPadding="false"
             android:padding="4dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnNewProject"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_margin="12dp"
+            android:text="@string/btn_new_project"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp" />
     </LinearLayout>
 
 </androidx.drawerlayout.widget.DrawerLayout>

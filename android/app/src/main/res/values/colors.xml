@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#000000</color>
+    <color name="surface">#1C1C1E</color>
+    <color name="surface_raised">#2C2C2E</color>
+    <color name="surface_input">#1C1C1E</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#99EBEBF5</color>
+    <color name="text_hint">#66EBEBF5</color>
+    <color name="accent_white">#FFFFFF</color>
+    <color name="destructive">#FF3B30</color>
+    <color name="divider">#33FFFFFF</color>
+    <color name="icon_tint">#FFFFFF</color>
+    <color name="selected_overlay">#33FFFFFF</color>
+</resources>
