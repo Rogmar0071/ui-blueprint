@@ -16,9 +16,12 @@ import android.provider.OpenableColumns
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -109,6 +112,31 @@ class FolderDetailActivity : AppCompatActivity() {
             artifact.url?.let { put("url", it) }
         }, folderId)
     }
+
+    // Chat adapter for per-folder chat (edit hidden; copy/share work same as MainActivity)
+    private val chatMessages = mutableListOf<ChatMessageAdapter.Message>()
+    private val chatAdapter = ChatMessageAdapter(object : ChatMessageAdapter.MessageActionListener {
+        override fun onCopyMessage(message: ChatMessageAdapter.Message) {
+            val clipboard = ContextCompat.getSystemService(
+                this@FolderDetailActivity, android.content.ClipboardManager::class.java,
+            )
+            clipboard?.setPrimaryClip(
+                android.content.ClipData.newPlainText("chat_message", message.content),
+            )
+            Toast.makeText(this@FolderDetailActivity, getString(R.string.toast_copied), Toast.LENGTH_SHORT).show()
+        }
+        override fun onShareMessage(message: ChatMessageAdapter.Message) {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, message.content)
+            }
+            startActivity(Intent.createChooser(intent, getString(R.string.share_via)))
+        }
+        override fun onEditMessage(message: ChatMessageAdapter.Message) {
+            // Edit not supported in folder chat
+        }
+        override fun onSelectionChanged(selectedCount: Int) {}
+    })
 
     // MediaProjection permission launcher.
     private val projectionLauncher = registerForActivityResult(
@@ -205,6 +233,12 @@ class FolderDetailActivity : AppCompatActivity() {
         binding.rvArtifacts.adapter = artifactAdapter
         binding.rvSupportingData.layoutManager = LinearLayoutManager(this)
         binding.rvSupportingData.adapter = supportingDataAdapter
+
+        // Set up folder chat RecyclerView
+        binding.rvFolderChatMessages.layoutManager = LinearLayoutManager(this).apply {
+            stackFromEnd = true
+        }
+        binding.rvFolderChatMessages.adapter = chatAdapter
 
         toggleSection(binding.headerJobs, binding.rvJobs, binding.ivJobsChevron)
         toggleSection(binding.headerArtifacts, binding.rvArtifacts, binding.ivArtifactsChevron)
@@ -656,13 +690,14 @@ class FolderDetailActivity : AppCompatActivity() {
      * POST /v1/folders/{id}/jobs with type=analyze to (re-)run analysis.
      * Does NOT upload the clip — upload only happens via Record or Pick from Gallery.
      */
-    private fun enqueueAnalyzeJob() {
+    private fun enqueueAnalyzeJob(options: JSONObject = JSONObject()) {
         binding.btnAnalyze.isEnabled = false
 
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
-        val body = JSONObject().put("type", "analyze").toString()
-            .toRequestBody("application/json".toMediaType())
+        val bodyJson = JSONObject().put("type", "analyze")
+        if (options.length() > 0) bodyJson.put("options", options)
+        val body = bodyJson.toString().toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("$baseUrl/v1/folders/$folderId/jobs")
             .post(body)
@@ -781,8 +816,11 @@ class FolderDetailActivity : AppCompatActivity() {
 
     private fun renderFolder(json: JSONObject) {
         lastFolderJson = json
-        val title = json.optString("title", "").trim()
-        binding.tvFolderTitle.text = if (title.isNotEmpty()) title else getString(R.string.label_untitled_project)
+        val rawTitle = json.optString("title", "").trim()
+        val title = if (rawTitle == "null") "" else rawTitle
+        val displayTitle = if (title.isNotEmpty()) title else getString(R.string.label_untitled_project)
+        binding.tvFolderTitle.text = displayTitle
+        supportActionBar?.title = displayTitle
         binding.tvFolderStatus.text = getString(R.string.label_folder_status, json.optString("status", "?"))
         binding.tvFolderId.text = getString(R.string.label_folder_id, folderId)
 
@@ -898,16 +936,17 @@ class FolderDetailActivity : AppCompatActivity() {
 
     private fun renderMessages(messages: JSONArray?) {
         if (messages == null || messages.length() == 0) return
-        val sb = StringBuilder()
+        val list = mutableListOf<ChatMessageAdapter.Message>()
         for (i in 0 until messages.length()) {
             val msg = messages.getJSONObject(i)
-            val role = msg.optString("role", "?")
+            val role = msg.optString("role", "user")
             val content = msg.optString("content", "")
-            val prefix = if (role == "user") "You" else "AI"
-            if (sb.isNotEmpty()) sb.append("\n")
-            sb.append("$prefix: $content")
+            val id = msg.optString("id", i.toString())
+            list.add(ChatMessageAdapter.Message(id = id, role = role, content = content))
         }
-        binding.tvChatLog.text = sb.toString()
+        chatMessages.clear()
+        chatMessages.addAll(list)
+        chatAdapter.submitList(chatMessages.toList())
         scrollChatToBottom()
     }
 
@@ -966,14 +1005,24 @@ class FolderDetailActivity : AppCompatActivity() {
     }
 
     private fun appendChatLine(line: String) {
-        val current = binding.tvChatLog.text
-        binding.tvChatLog.text = if (current.isNullOrEmpty()) line else "$current\n$line"
+        val id = "local_${System.currentTimeMillis()}_${chatMessages.size}"
+        val role = if (line.startsWith("You:")) "user" else "assistant"
+        val content = if (line.startsWith("You: ") || line.startsWith("AI: ")) {
+            line.substringAfter(": ")
+        } else {
+            line
+        }
+        chatMessages.add(ChatMessageAdapter.Message(id = id, role = role, content = content))
+        chatAdapter.submitList(chatMessages.toList())
         scrollChatToBottom()
     }
 
     private fun scrollChatToBottom() {
-        binding.scrollChat.post {
-            binding.scrollChat.fullScroll(View.FOCUS_DOWN)
+        binding.rvFolderChatMessages.post {
+            val count = chatAdapter.itemCount
+            if (count > 0) {
+                binding.rvFolderChatMessages.scrollToPosition(count - 1)
+            }
         }
     }
 
@@ -1002,16 +1051,77 @@ class FolderDetailActivity : AppCompatActivity() {
         val view = layoutInflater.inflate(R.layout.bottom_sheet_analyze, null)
         sheet.setContentView(view)
 
-        view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnAnalyzeStandard)
-            .setOnClickListener {
-                sheet.dismiss()
-                onAnalyzeClicked()
+        val hasClip = !folderClipObjectKey.isNullOrBlank()
+
+        // Clip info label
+        val tvCurrentClip = view.findViewById<TextView>(R.id.tvCurrentClip)
+        val tvNoClipHint = view.findViewById<TextView>(R.id.tvNoClipHint)
+        if (hasClip) {
+            val clipName = folderClipObjectKey!!.substringAfterLast('/')
+            tvCurrentClip.text = getString(R.string.label_current_clip, clipName)
+            tvCurrentClip.visibility = View.VISIBLE
+            tvNoClipHint.visibility = View.GONE
+        } else {
+            tvCurrentClip.visibility = View.GONE
+            tvNoClipHint.visibility = View.VISIBLE
+        }
+
+        // Pick / Change clip buttons
+        val btnPickClip = view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnPickClip)
+        val btnChangeClip = view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnChangeClip)
+        val btnAnalyzeStandard = view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnAnalyzeStandard)
+        val btnAnalyzeRerun = view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnAnalyzeRerun)
+
+        if (hasClip) {
+            btnChangeClip.visibility = View.VISIBLE
+            btnPickClip.visibility = View.GONE
+            btnAnalyzeStandard.visibility = View.VISIBLE
+            btnAnalyzeRerun.visibility = View.VISIBLE
+        } else {
+            btnPickClip.visibility = View.VISIBLE
+            btnChangeClip.visibility = View.GONE
+            btnAnalyzeStandard.visibility = View.GONE
+            btnAnalyzeRerun.visibility = View.GONE
+        }
+
+        btnPickClip.setOnClickListener {
+            sheet.dismiss()
+            galleryPickLauncher.launch("video/*")
+        }
+        btnChangeClip.setOnClickListener {
+            sheet.dismiss()
+            galleryPickLauncher.launch("video/*")
+        }
+
+        // Additional analysis expandable section
+        val tvAdditionalHeader = view.findViewById<TextView>(R.id.tvAdditionalAnalysisHeader)
+        val layoutAdditional = view.findViewById<LinearLayout>(R.id.layoutAdditionalAnalysis)
+        tvAdditionalHeader.setOnClickListener {
+            if (layoutAdditional.visibility == View.VISIBLE) {
+                layoutAdditional.visibility = View.GONE
+                tvAdditionalHeader.text = getString(R.string.label_additional_analysis)
+            } else {
+                layoutAdditional.visibility = View.VISIBLE
+                tvAdditionalHeader.text = getString(R.string.label_additional_analysis_expanded)
             }
-        view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnAnalyzeRerun)
-            .setOnClickListener {
-                sheet.dismiss()
-                enqueueAnalyzeJobForced()
-            }
+        }
+
+        val cbKeyframes = view.findViewById<CheckBox>(R.id.cbKeyframes)
+        val cbOcr = view.findViewById<CheckBox>(R.id.cbOcr)
+        val cbTranscript = view.findViewById<CheckBox>(R.id.cbTranscript)
+        val cbEvents = view.findViewById<CheckBox>(R.id.cbEvents)
+        val cbSegmentSummaries = view.findViewById<CheckBox>(R.id.cbSegmentSummaries)
+
+        btnAnalyzeStandard.setOnClickListener {
+            sheet.dismiss()
+            val opts = buildAdditionalAnalysisOptions(cbKeyframes, cbOcr, cbTranscript, cbEvents, cbSegmentSummaries)
+            enqueueAnalyzeJob(opts)
+        }
+        btnAnalyzeRerun.setOnClickListener {
+            sheet.dismiss()
+            val opts = buildAdditionalAnalysisOptions(cbKeyframes, cbOcr, cbTranscript, cbEvents, cbSegmentSummaries)
+            enqueueAnalyzeJobForced(opts)
+        }
         view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnViewLastAnalysis)
             .setOnClickListener {
                 sheet.dismiss()
@@ -1020,12 +1130,34 @@ class FolderDetailActivity : AppCompatActivity() {
         sheet.show()
     }
 
-    private fun enqueueAnalyzeJobForced() {
+    private fun buildAdditionalAnalysisOptions(
+        cbKeyframes: CheckBox,
+        cbOcr: CheckBox,
+        cbTranscript: CheckBox,
+        cbEvents: CheckBox,
+        cbSegmentSummaries: CheckBox,
+    ): JSONObject {
+        val anyEnabled = cbKeyframes.isChecked || cbOcr.isChecked ||
+            cbTranscript.isChecked || cbEvents.isChecked || cbSegmentSummaries.isChecked
+        return JSONObject().apply {
+            put("additional_analysis", JSONObject().apply {
+                put("enabled", anyEnabled)
+                put("keyframes", cbKeyframes.isChecked)
+                put("ocr", cbOcr.isChecked)
+                put("transcript", cbTranscript.isChecked)
+                put("events", cbEvents.isChecked)
+                put("segment_summaries", cbSegmentSummaries.isChecked)
+            })
+        }
+    }
+
+    private fun enqueueAnalyzeJobForced(options: JSONObject = JSONObject()) {
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
         binding.btnAnalyze.isEnabled = false
-        val body = JSONObject().put("type", "analyze").toString()
-            .toRequestBody("application/json".toMediaType())
+        val bodyJson = JSONObject().put("type", "analyze")
+        if (options.length() > 0) bodyJson.put("options", options)
+        val body = bodyJson.toString().toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("$baseUrl/v1/folders/$folderId/jobs")
             .post(body)

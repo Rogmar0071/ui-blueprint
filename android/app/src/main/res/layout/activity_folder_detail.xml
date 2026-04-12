@@ -299,24 +299,15 @@
         android:textSize="13sp"
         android:layout_marginBottom="4dp" />
 
-    <ScrollView
-        android:id="@+id/scrollChat"
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvFolderChatMessages"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:minHeight="120dp"
-        android:fillViewport="true"
-        android:layout_marginBottom="8dp">
-
-        <TextView
-            android:id="@+id/tvChatLog"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:textColor="@color/text_primary"
-            android:textSize="12sp"
-            tools:text="You: Hello\nAI: Hi!" />
-    </ScrollView>
+        android:clipToPadding="false"
+        android:paddingBottom="8dp"
+        android:layout_marginBottom="8dp" />
 
     <!-- Input bar pill -->
     <LinearLayout
@@ -324,6 +315,9 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:background="@drawable/bg_input_bar"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp"
+        android:layout_marginBottom="8dp"
         android:paddingStart="4dp"
         android:paddingEnd="4dp"
         android:paddingTop="4dp"
@@ -347,9 +341,9 @@
             android:layout_weight="1"
             android:background="@null"
             android:textColor="@color/text_primary"
-            android:hint="@string/hint_reply_folder"
+            android:hint="@string/hint_reply_main"
             android:inputType="textMultiLine"
-            android:maxLines="3"
+            android:maxLines="4"
             android:paddingStart="8dp"
             android:paddingEnd="8dp" />
 

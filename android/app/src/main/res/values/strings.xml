@@ -103,6 +103,20 @@
     <!-- Artifact viewer -->
     <string name="artifact_viewer_loading">Loading artifact…</string>
     <string name="artifact_url_unavailable">Artifact URL not available</string>
+    <string name="video_playback_error">Failed to play video</string>
     <!-- Text viewer share menu -->
     <string name="action_share_text">Share</string>
+    <!-- Analyze bottom sheet – clip info -->
+    <string name="label_current_clip">Clip: %1$s</string>
+    <string name="btn_change_clip">Change clip</string>
+    <string name="btn_pick_clip">Pick a clip</string>
+    <string name="label_no_clip_hint">Upload a clip before analyzing.</string>
+    <!-- Analyze bottom sheet – additional analysis -->
+    <string name="label_additional_analysis">▶ Additional analysis</string>
+    <string name="label_additional_analysis_expanded">▼ Additional analysis</string>
+    <string name="toggle_keyframes">Keyframes</string>
+    <string name="toggle_ocr">OCR (text recognition)</string>
+    <string name="toggle_transcript">Transcript</string>
+    <string name="toggle_events">Events</string>
+    <string name="toggle_segment_summaries">Segment summaries</string>
 </resources>

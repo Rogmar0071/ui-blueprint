@@ -185,18 +185,49 @@ def _get_folder(folder_id: str):
 
 
 def _create_artifact(folder_id: str, artifact_type: str, object_key: str) -> None:
-    from sqlmodel import Session
+    from sqlmodel import Session, select
 
     from backend.app.database import get_engine
     from backend.app.models import Artifact
 
+    # Aggregate artifact types that should be upserted (one per folder).
+    # Per-segment artifacts (baseline_segment_json, keyframes_segment_json, etc.)
+    # and clip artifacts always use INSERT so all records are retained.
+    UPSERT_TYPES = {
+        "analysis_json",
+        "analysis_md",
+        "blueprint_json",
+        "blueprint_md",
+        "segments_manifest_json",
+        "preview_png",
+    }
+
     with Session(get_engine()) as session:
-        artifact = Artifact(
-            folder_id=uuid.UUID(folder_id),
-            type=artifact_type,
-            object_key=object_key,
-        )
-        session.add(artifact)
+        if artifact_type in UPSERT_TYPES:
+            existing = session.exec(
+                select(Artifact).where(
+                    Artifact.folder_id == uuid.UUID(folder_id),
+                    Artifact.type == artifact_type,
+                )
+            ).first()
+            if existing:
+                existing.object_key = object_key
+                existing.created_at = datetime.now(timezone.utc)
+                session.add(existing)
+            else:
+                artifact = Artifact(
+                    folder_id=uuid.UUID(folder_id),
+                    type=artifact_type,
+                    object_key=object_key,
+                )
+                session.add(artifact)
+        else:
+            artifact = Artifact(
+                folder_id=uuid.UUID(folder_id),
+                type=artifact_type,
+                object_key=object_key,
+            )
+            session.add(artifact)
         session.commit()
 
 
