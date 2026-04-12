@@ -4,6 +4,7 @@
     <!-- Screen capture via MediaProjection -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Network access for upload -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Required for WorkManager's network constraint -->
@@ -17,6 +18,10 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!-- Microphone for audio capture and screen+mic recording -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Read audio files from gallery (Android 13+) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
     <application
         android:allowBackup="true"
@@ -69,7 +74,13 @@
         <!-- Foreground service that runs MediaProjection + MediaRecorder -->
         <service
             android:name=".CaptureService"
-            android:foregroundServiceType="mediaProjection"
+            android:foregroundServiceType="mediaProjection|microphone"
+            android:exported="false" />
+
+        <!-- Foreground service for mic-only audio recording -->
+        <service
+            android:name=".AudioCaptureService"
+            android:foregroundServiceType="microphone"
             android:exported="false" />
 
     </application>

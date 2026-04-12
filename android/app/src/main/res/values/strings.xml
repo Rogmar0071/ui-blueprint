@@ -119,4 +119,9 @@
     <string name="toggle_transcript">Transcript</string>
     <string name="toggle_events">Events</string>
     <string name="toggle_segment_summaries">Segment summaries</string>
+    <string name="btn_record_audio">Record Audio</string>
+    <string name="status_recording_audio">Recording audio…</string>
+    <string name="status_audio_upload_succeeded">Audio uploaded.</string>
+    <string name="status_audio_upload_failed">Audio upload failed.</string>
+    <string name="audio_capture_channel_name">Audio Recording</string>
 </resources>

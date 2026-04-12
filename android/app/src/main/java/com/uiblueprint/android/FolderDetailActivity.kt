@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -88,6 +89,9 @@ class FolderDetailActivity : AppCompatActivity() {
     private var lastRecordingDurationMs: Int? = null
     private var lastGalleryUri: Uri? = null
 
+    /** True while AudioCaptureService is actively recording. */
+    private var isAudioRecording = false
+
     /** Last full folder JSON response; used by openLastAnalysisArtifact(). */
     private var lastFolderJson: JSONObject? = null
 
@@ -153,7 +157,28 @@ class FolderDetailActivity : AppCompatActivity() {
     private val notificationLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
+        checkRecordAudioThenCapture()
+    }
+
+    // RECORD_AUDIO permission launcher for screen recording (with-audio flow).
+    private val recordAudioForScreenLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        // Proceed with screen capture regardless of outcome; CaptureService
+        // falls back to video-only if RECORD_AUDIO is not granted.
         requestScreenCapture()
+    }
+
+    // RECORD_AUDIO permission launcher for standalone audio recording.
+    private val recordAudioLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            startAudioCapture()
+        } else {
+            resetAudioRecordButton()
+            Toast.makeText(this, "Microphone permission is required for audio recording.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // Gallery video picker launcher.
@@ -195,6 +220,26 @@ class FolderDetailActivity : AppCompatActivity() {
         }
     }
 
+    // Receives AUDIO_CAPTURE_DONE broadcast from AudioCaptureService.
+    private val audioCaptureReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            isAudioRecording = false
+            resetAudioRecordButton()
+            val audioPath = intent.getStringExtra(AudioCaptureService.EXTRA_AUDIO_PATH)
+            val error = intent.getStringExtra(AudioCaptureService.EXTRA_ERROR)
+            val durationMs = intent.getIntExtra(AudioCaptureService.EXTRA_RECORDING_DURATION_MS, 0)
+            if (error != null || audioPath == null) {
+                Toast.makeText(
+                    this@FolderDetailActivity,
+                    error ?: getString(R.string.status_audio_upload_failed),
+                    Toast.LENGTH_LONG,
+                ).show()
+            } else {
+                uploadAudioFromFile(audioPath, durationMs)
+            }
+        }
+    }
+
     private val recordingWatchdogRunnable = Runnable {
         val startedAtMs = captureResultStore.getRecordingStartedAtMs() ?: return@Runnable
         if (recordingCompletionHelper.hasTimedOut(startedAtMs, SystemClock.elapsedRealtime())) {
@@ -220,6 +265,7 @@ class FolderDetailActivity : AppCompatActivity() {
         binding.btnRecord.setOnClickListener { onRecordClicked() }
         binding.btnPickGallery.setOnClickListener { onPickGalleryClicked() }
         binding.btnAnalyze.setOnClickListener { showAnalyzeBottomSheet() }
+        binding.btnRecordAudio.setOnClickListener { onRecordAudioClicked() }
         binding.btnSend.setOnClickListener { onSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
         binding.tvFolderTitle.text = getString(R.string.folder_detail_title)
@@ -256,6 +302,12 @@ class FolderDetailActivity : AppCompatActivity() {
             IntentFilter(CaptureService.ACTION_CAPTURE_DONE),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        ContextCompat.registerReceiver(
+            this,
+            audioCaptureReceiver,
+            IntentFilter(AudioCaptureService.ACTION_AUDIO_CAPTURE_DONE),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         recoverPendingCaptureState()
         // Refresh folder state on resume; renderFolder() will restart polling
         // if there is still an active analyze job.
@@ -267,6 +319,7 @@ class FolderDetailActivity : AppCompatActivity() {
         watchdogHandler.removeCallbacks(recordingWatchdogRunnable)
         stopPolling()
         unregisterReceiver(captureReceiver)
+        unregisterReceiver(audioCaptureReceiver)
     }
 
     override fun onDestroy() {
@@ -406,7 +459,17 @@ class FolderDetailActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         } else {
+            checkRecordAudioThenCapture()
+        }
+    }
+
+    private fun checkRecordAudioThenCapture() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
             requestScreenCapture()
+        } else {
+            recordAudioForScreenLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -487,6 +550,99 @@ class FolderDetailActivity : AppCompatActivity() {
         clearRecoveryState()
         resetActionButtons()
         Toast.makeText(this, ERROR_PERMISSION_DENIED, Toast.LENGTH_SHORT).show()
+    }
+
+    // -------------------------------------------------------------------------
+    // Audio recording flow
+    // -------------------------------------------------------------------------
+
+    private fun onRecordAudioClicked() {
+        if (isAudioRecording) {
+            // Already recording — stop it.
+            AudioCaptureService.stop(this)
+            isAudioRecording = false
+            resetAudioRecordButton()
+            return
+        }
+
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startAudioCapture()
+        } else {
+            recordAudioLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startAudioCapture() {
+        isAudioRecording = true
+        setActionStatus(getString(R.string.status_recording_audio))
+        binding.btnRecordAudio.isEnabled = false
+
+        val intent = Intent(this, AudioCaptureService::class.java)
+        try {
+            startForegroundService(intent)
+        } catch (_: Exception) {
+            isAudioRecording = false
+            resetAudioRecordButton()
+            Toast.makeText(this, getString(R.string.status_audio_upload_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun resetAudioRecordButton() {
+        binding.btnRecordAudio.isEnabled = true
+        if (!isAudioRecording) {
+            setActionStatus(null)
+        }
+    }
+
+    /**
+     * Upload a recorded audio [File] path to this project's folder on the backend.
+     */
+    private fun uploadAudioFromFile(audioPath: String, durationMs: Int) {
+        val file = File(audioPath)
+        if (!file.exists()) {
+            Toast.makeText(this, getString(R.string.status_audio_upload_failed), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+
+        clipUploadExecutor.execute {
+            try {
+                val audioBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart(
+                        "audio", file.name,
+                        file.asRequestBody("audio/mp4".toMediaType()),
+                    )
+                    .build()
+
+                val request = Request.Builder()
+                    .url("$baseUrl/v1/folders/$folderId/audio")
+                    .post(audioBody)
+                    .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+                    .build()
+
+                BackendClient.executeWithRetry(request).use { resp ->
+                    if (!resp.isSuccessful) throw IOException("Audio upload failed: ${resp.code}")
+                }
+
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.status_audio_upload_succeeded), Toast.LENGTH_SHORT).show()
+                    loadFolder()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.status_audio_upload_failed),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
     }
 
     private fun recoverPendingCaptureState() {

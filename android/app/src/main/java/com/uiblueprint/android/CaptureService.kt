@@ -102,17 +102,27 @@ class CaptureService : Service() {
         )
 
         try {
-            mediaRecorder = MediaRecorder(this).apply {
-                setVideoSource(MediaRecorder.VideoSource.SURFACE)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                setVideoEncodingBitRate(VIDEO_BITRATE)
-                setVideoFrameRate(VIDEO_FPS)
-                setVideoSize(width, height)
-                setOutputFile(outputFile!!.absolutePath)
-                prepare()
+            mediaRecorder = buildMediaRecorder(withAudio = true, width = width, height = height)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "RECORD_AUDIO not granted; falling back to video-only recording", e)
+            mediaRecorder?.release()
+            mediaRecorder = null
+            try {
+                mediaRecorder = buildMediaRecorder(withAudio = false, width = width, height = height)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed to start recording (video-only fallback)", e2)
+                signalCaptureCompleted(CaptureDoneEvent(error = ERROR_START_FAILED))
+                stopSelf()
+                return
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start recording", e)
+            signalCaptureCompleted(CaptureDoneEvent(error = ERROR_START_FAILED))
+            stopSelf()
+            return
+        }
 
+        try {
             val mpm = getSystemService(MediaProjectionManager::class.java)
             mediaProjection = mpm.getMediaProjection(resultCode, resultData).also { mp ->
                 mp.registerCallback(object : MediaProjection.Callback() {
@@ -141,9 +151,30 @@ class CaptureService : Service() {
             // Stop after CLIP_DURATION_MS.
             handler.postDelayed(finishRecordingRunnable, CLIP_DURATION_MS.toLong())
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start recording", e)
+            Log.e(TAG, "Failed to start projection/recording", e)
             signalCaptureCompleted(CaptureDoneEvent(error = ERROR_START_FAILED))
             stopSelf()
+        }
+    }
+
+    private fun buildMediaRecorder(withAudio: Boolean, width: Int, height: Int): MediaRecorder {
+        return MediaRecorder(this).apply {
+            if (withAudio) {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+            }
+            setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            if (withAudio) {
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setAudioEncodingBitRate(128_000)
+                setAudioSamplingRate(44_100)
+            }
+            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            setVideoEncodingBitRate(VIDEO_BITRATE)
+            setVideoFrameRate(VIDEO_FPS)
+            setVideoSize(width, height)
+            setOutputFile(outputFile!!.absolutePath)
+            prepare()
         }
     }
 

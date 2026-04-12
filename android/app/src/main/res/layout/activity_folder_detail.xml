@@ -77,6 +77,21 @@
             android:enabled="false" />
     </LinearLayout>
 
+    <!-- Audio recording button -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="4dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnRecordAudio"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_record_audio"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+
     <TextView
         android:id="@+id/tvActionStatus"
         android:layout_width="wrap_content"

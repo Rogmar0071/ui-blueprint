@@ -1068,7 +1068,9 @@ def _ffmpeg_exe() -> str:
         return "ffmpeg"
 
 
-def extract_segment(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
+def extract_segment(
+    clip_path: str, t0_ms: int, t1_ms: int, audio_path: str | None = None
+) -> dict[str, Any]:
     """
     Run the full extraction pipeline on [t0_ms, t1_ms) of clip_path.
 
@@ -1244,10 +1246,14 @@ def extract_ocr(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
         return {"text_blocks": []}
 
 
-def extract_transcript(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
+def extract_transcript(
+    clip_path: str, t0_ms: int, t1_ms: int, audio_path: str | None = None
+) -> dict[str, Any]:
     """
     Extract audio transcript for [t0_ms, t1_ms) of clip_path.
 
+    When *audio_path* is provided the transcript pipeline runs against a
+    time-sliced segment of that audio file instead of (silent) video frames.
     Returns a dict with key ``transcript``.  Currently returns an empty
     transcript; a real implementation would call a speech-to-text backend.
     Falls back gracefully on any error.

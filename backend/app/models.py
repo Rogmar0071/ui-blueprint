@@ -76,9 +76,10 @@ class Folder(SQLModel, table=True):
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
     )
-    # pending / uploading / queued / running / done / failed
+    # pending / uploading / queued / running / done / failed / audio_ready
     status: str = Field(default="pending")
     clip_object_key: Optional[str] = Field(default=None)
+    audio_object_key: Optional[str] = Field(default=None)
 
     def __init__(self, **data):
         if "created_at" not in data or data["created_at"] is None:

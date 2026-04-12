@@ -132,6 +132,7 @@ def _folder_dict(folder) -> dict[str, Any]:
         "title": folder.title,
         "status": folder.status,
         "clip_object_key": folder.clip_object_key,
+        "audio_object_key": folder.audio_object_key,
         "created_at": _dt(folder.created_at),
         "updated_at": _dt(folder.updated_at),
     }
@@ -488,6 +489,86 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
             "clip_object_key": clip_key,
         },
         status_code=202,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/folders/{folder_id}/audio  — upload audio file
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{folder_id}/audio", dependencies=[Depends(require_auth)])
+async def upload_audio(
+    folder_id: str,
+    audio: UploadFile,
+    db=Depends(_db_session),
+) -> JSONResponse:
+    """
+    Accept a multipart audio upload, store it in R2 (when configured), create
+    an Artifact record, and update the folder's audio_object_key.
+
+    Returns 200 with the audio_object_key and artifact_id.
+    """
+    import tempfile
+
+    from backend.app import storage
+    from backend.app.models import Artifact
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    folder = _folder_or_404(db, fid)
+
+    if not storage.storage_available():
+        raise HTTPException(status_code=502, detail="Storage not configured")
+
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
+        tmp_path = tmp.name
+        content = await audio.read()
+        tmp.write(content)
+
+    try:
+        object_key = storage.upload_file(
+            folder_id, "audio.m4a", tmp_path, "audio/mp4"
+        )
+    except Exception as exc:
+        logger.error("Audio R2 upload failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}") from exc
+    finally:
+        import os as _os
+        try:
+            _os.unlink(tmp_path)
+        except Exception:  # noqa: BLE001
+            pass
+
+    folder.audio_object_key = object_key
+    if not folder.clip_object_key:
+        folder.status = "audio_ready"
+    from datetime import datetime, timezone
+    folder.updated_at = datetime.now(timezone.utc)
+    db.add(folder)
+
+    artifact = Artifact(
+        folder_id=fid,
+        type="audio_m4a",
+        object_key=object_key,
+    )
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+
+    log_event(
+        source="backend",
+        level="info",
+        event_type="audio.upload.succeeded",
+        message=f"Audio upload succeeded for folder {fid}",
+        folder_id=str(fid),
+        details_json={"audio_object_key": object_key},
+    )
+
+    return JSONResponse(
+        content={
+            "audio_object_key": object_key,
+            "artifact_id": str(artifact.id),
+        }
     )
 
 

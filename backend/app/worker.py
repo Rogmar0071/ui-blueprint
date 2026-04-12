@@ -829,6 +829,27 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
         except Exception:  # noqa: BLE001
             clip_path = None
 
+    # Download audio file if folder has an audio_object_key.
+    audio_path: str | None = None
+    folder = _get_folder(folder_id)
+    if folder is not None and folder.audio_object_key and clip_tmpdir is not None:
+        try:
+            _audio_local = os.path.join(clip_tmpdir, "audio.m4a")
+            audio_found = storage.get_object_to_file(folder.audio_object_key, _audio_local)
+            if audio_found:
+                audio_path = _audio_local
+        except Exception:  # noqa: BLE001
+            audio_path = None
+    elif folder is not None and folder.audio_object_key and clip_tmpdir is None:
+        try:
+            clip_tmpdir = tempfile.mkdtemp()
+            _audio_local = os.path.join(clip_tmpdir, "audio.m4a")
+            audio_found = storage.get_object_to_file(folder.audio_object_key, _audio_local)
+            if audio_found:
+                audio_path = _audio_local
+        except Exception:  # noqa: BLE001
+            audio_path = None
+
     try:
         processed = 0
         while cursor + processed < total:
@@ -849,7 +870,9 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
                 try:
                     from ui_blueprint.extractor import extract_segment
 
-                    analysis = extract_segment(clip_path, seg["t0_ms"], seg["t1_ms"])
+                    analysis = extract_segment(
+                        clip_path, seg["t0_ms"], seg["t1_ms"], audio_path=audio_path
+                    )
                     baseline_data["analysis"] = analysis
                 except Exception:  # noqa: BLE001
                     baseline_data["notes"] = f"Segment {cursor + processed + 1} of {total}"
@@ -1146,6 +1169,20 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
         except Exception:  # noqa: BLE001
             clip_path = None
 
+    # Download audio file if folder has an audio_object_key.
+    audio_path: str | None = None
+    _opt_folder = _get_folder(folder_id)
+    if _opt_folder is not None and _opt_folder.audio_object_key:
+        try:
+            if clip_tmpdir is None:
+                clip_tmpdir = tempfile.mkdtemp()
+            _audio_local = os.path.join(clip_tmpdir, "audio.m4a")
+            audio_found = storage.get_object_to_file(_opt_folder.audio_object_key, _audio_local)
+            if audio_found:
+                audio_path = _audio_local
+        except Exception:  # noqa: BLE001
+            audio_path = None
+
     try:
         processed = 0
         while cursor + processed < total:
@@ -1167,7 +1204,9 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
                         try:
                             from ui_blueprint.extractor import extract_segment
 
-                            _segment_result = extract_segment(clip_path, t0_ms, t1_ms)
+                            _segment_result = extract_segment(
+                                clip_path, t0_ms, t1_ms, audio_path=audio_path
+                            )
                         except Exception:  # noqa: BLE001
                             _segment_result = {
                                 "elements_catalog": [],
@@ -1211,7 +1250,7 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
                     elif toggle == "transcript" and clip_path is not None:
                         from ui_blueprint.extractor import extract_transcript
 
-                        data = extract_transcript(clip_path, t0_ms, t1_ms)
+                        data = extract_transcript(clip_path, t0_ms, t1_ms, audio_path=audio_path)
                         artifact_data = {
                             "schema_version": "v1",
                             "segment_id": segment_id,
