@@ -8,7 +8,10 @@ Notes
 -----
 The analyze_repo job type reuses all existing Job columns.
 This migration is a no-op DDL migration that documents the new artifact types
-repo_zip and repo_analysis_md in the ops_events log schema comment only.
+introduced by the analyze_repo pipeline:
+  - repo_zip          Raw repository ZIP uploaded by the client.
+  - repo_analysis_md  Full structural analysis Markdown report from OpenAI.
+  - repo_structure_json  Compact JSON summary (file tree + analysis excerpt).
 No table changes required.
 """
 from __future__ import annotations

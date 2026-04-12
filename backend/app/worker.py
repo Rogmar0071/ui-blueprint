@@ -2316,12 +2316,21 @@ def run_analyze_repo_step(job_id: str) -> None:
                             text = raw.decode("utf-8", errors="replace")
                             text_files.append((size, rel_path, text))
                         except Exception:  # noqa: BLE001
-                            pass
+                            logger.debug("Skipping file %s: could not decode", rel_path)
 
             _update_job(job_id, progress=35)
 
             # Read text content up to MAX_REPO_CHARS, smallest files first.
             text_files.sort(key=lambda t: t[0])
+            _EXT_TO_LANG: dict[str, str] = {
+                ".py": "python", ".kt": "kotlin", ".java": "java", ".js": "javascript",
+                ".ts": "typescript", ".tsx": "typescript", ".jsx": "javascript",
+                ".go": "go", ".rs": "rust", ".c": "c", ".cpp": "cpp", ".h": "c",
+                ".cs": "csharp", ".rb": "ruby", ".swift": "swift", ".sh": "bash",
+                ".xml": "xml", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+                ".toml": "toml", ".md": "markdown", ".html": "html", ".css": "css",
+                ".sql": "sql", ".gradle": "groovy",
+            }
             accumulated = 0
             content_sections: list[str] = []
             for _size, path, text in text_files:
@@ -2329,7 +2338,8 @@ def run_analyze_repo_step(job_id: str) -> None:
                 if remaining <= 0:
                     break
                 chunk = text[:remaining]
-                content_sections.append(f"### File: {path}\n```\n{chunk}\n```")
+                lang = _EXT_TO_LANG.get(os.path.splitext(path)[1].lower(), "")
+                content_sections.append(f"### File: {path}\n```{lang}\n{chunk}\n```")
                 accumulated += len(chunk)
 
             content_block = (
@@ -2394,7 +2404,7 @@ def run_analyze_repo_step(job_id: str) -> None:
 
             # Save compact JSON summary as repo_structure_json artifact.
             structure_json = json.dumps(
-                {"file_tree": file_tree, "phase1_map": analysis_md[:2000]},
+                {"file_tree": file_tree, "analysis_preview": analysis_md[:2000]},
                 ensure_ascii=False,
             ).encode("utf-8")
             json_key = storage.upload_bytes(
