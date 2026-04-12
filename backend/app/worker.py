@@ -772,14 +772,17 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
     Stage: baseline_segments (progress 20 → 80), one bounded step.
 
     For each segment in this step:
-    • Produces a minimal ``baseline.json`` (segment_id, t0_ms, t1_ms, notes).
-    • Uploads it to ``segments/{segment_id}/baseline.json`` with a deterministic key.
+    • Downloads the clip from storage once and calls ``extract_segment`` to
+      produce real per-segment analysis data.
+    • Uploads a ``baseline.json`` with schema_version, segment_id, t0/t1 and
+      an ``analysis`` sub-dict (or a ``notes`` fallback if extraction fails).
     • Creates a ``baseline_segment_json`` artifact.
 
     When all segments are processed advances to stage=``aggregate``.
     The step budget is controlled by ``ANALYZE_STEP_MAX_SECONDS``.
     """
     import json as _json
+    import shutil
 
     from backend.app import storage
 
@@ -812,35 +815,64 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
         enqueue_job(job_id, "analyze")
         return
 
-    processed = 0
-    while cursor + processed < total:
-        if time.monotonic() - step_start >= step_max:
-            break
-
-        seg = segments[cursor + processed]
-        segment_id = seg["segment_id"]
-
-        baseline_data = {
-            "schema_version": "v1",
-            "segment_id": segment_id,
-            "t0_ms": seg["t0_ms"],
-            "t1_ms": seg["t1_ms"],
-            "notes": f"Segment {cursor + processed + 1} of {total}",
-        }
-        baseline_bytes = _json.dumps(baseline_data, indent=2).encode("utf-8")
-
+    # Download the clip once for this step so all segments share the file.
+    clip_key = (job.analyze_clip_object_key or manifest.get("clip_object_key", "")).strip()
+    clip_path: str | None = None
+    clip_tmpdir: str | None = None
+    if clip_key:
         try:
-            bl_key = storage.upload_bytes(
-                folder_id,
-                f"segments/{segment_id}/baseline.json",
-                baseline_bytes,
-                "application/json",
-            )
-            _create_artifact(folder_id, "baseline_segment_json", bl_key)
-        except Exception:
-            pass  # storage unavailable – still advance cursor
+            clip_tmpdir = tempfile.mkdtemp()
+            _clip_local = os.path.join(clip_tmpdir, "clip.mp4")
+            found = storage.get_object_to_file(clip_key, _clip_local)
+            if found:
+                clip_path = _clip_local
+        except Exception:  # noqa: BLE001
+            clip_path = None
 
-        processed += 1
+    try:
+        processed = 0
+        while cursor + processed < total:
+            if time.monotonic() - step_start >= step_max:
+                break
+
+            seg = segments[cursor + processed]
+            segment_id = seg["segment_id"]
+
+            baseline_data: dict = {
+                "schema_version": "v1",
+                "segment_id": segment_id,
+                "t0_ms": seg["t0_ms"],
+                "t1_ms": seg["t1_ms"],
+            }
+
+            if clip_path is not None:
+                try:
+                    from ui_blueprint.extractor import extract_segment
+
+                    analysis = extract_segment(clip_path, seg["t0_ms"], seg["t1_ms"])
+                    baseline_data["analysis"] = analysis
+                except Exception:  # noqa: BLE001
+                    baseline_data["notes"] = f"Segment {cursor + processed + 1} of {total}"
+            else:
+                baseline_data["notes"] = f"Segment {cursor + processed + 1} of {total}"
+
+            baseline_bytes = _json.dumps(baseline_data, indent=2).encode("utf-8")
+
+            try:
+                bl_key = storage.upload_bytes(
+                    folder_id,
+                    f"segments/{segment_id}/baseline.json",
+                    baseline_bytes,
+                    "application/json",
+                )
+                _create_artifact(folder_id, "baseline_segment_json", bl_key)
+            except Exception:
+                pass  # storage unavailable – still advance cursor
+
+            processed += 1
+    finally:
+        if clip_tmpdir is not None:
+            shutil.rmtree(clip_tmpdir, ignore_errors=True)
 
     new_cursor = cursor + processed
     done = new_cursor >= total
@@ -1032,7 +1064,7 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
     Core stage for the ``analyze_optional`` job type (progress 5 → 100).
 
     For each segment (cursor-bounded step):
-    • Runs all enabled optional analyses defined in ``analyze_options``.
+    • Downloads the clip once and runs all enabled optional analyses.
     • Produces per-segment artifacts:
         - ``keyframes_segment_json``:  segments/{segment_id}/keyframes.json
         - ``ocr_segment_json``:        segments/{segment_id}/ocr.json
@@ -1044,6 +1076,7 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
     The step budget is controlled by ``ANALYZE_STEP_MAX_SECONDS``.
     """
     import json as _json
+    import shutil
 
     from backend.app import storage
 
@@ -1099,36 +1132,157 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
         )
         return
 
-    processed = 0
-    while cursor + processed < total:
-        if time.monotonic() - step_start >= step_max:
-            break
+    # Download clip once for this step.
+    clip_key = (job.analyze_clip_object_key or manifest.get("clip_object_key", "")).strip()
+    clip_path: str | None = None
+    clip_tmpdir: str | None = None
+    if clip_key:
+        try:
+            clip_tmpdir = tempfile.mkdtemp()
+            _clip_local = os.path.join(clip_tmpdir, "clip.mp4")
+            found = storage.get_object_to_file(clip_key, _clip_local)
+            if found:
+                clip_path = _clip_local
+        except Exception:  # noqa: BLE001
+            clip_path = None
 
-        seg = segments[cursor + processed]
-        segment_id = seg["segment_id"]
+    try:
+        processed = 0
+        while cursor + processed < total:
+            if time.monotonic() - step_start >= step_max:
+                break
 
-        for toggle, (artifact_type, filename) in enabled_analyses.items():
-            artifact_data = {
-                "schema_version": "v1",
-                "segment_id": segment_id,
-                "t0_ms": seg["t0_ms"],
-                "t1_ms": seg["t1_ms"],
-                "type": toggle,
-                "data": {},
-            }
-            artifact_bytes = _json.dumps(artifact_data, indent=2).encode("utf-8")
-            try:
-                obj_key = storage.upload_bytes(
-                    folder_id,
-                    f"segments/{segment_id}/{filename}",
-                    artifact_bytes,
-                    "application/json",
-                )
-                _create_artifact(folder_id, artifact_type, obj_key)
-            except Exception:
-                pass  # storage unavailable – still advance cursor
+            seg = segments[cursor + processed]
+            segment_id = seg["segment_id"]
+            t0_ms: int = seg["t0_ms"]
+            t1_ms: int = seg["t1_ms"]
 
-        processed += 1
+            # Cache extract_segment output per segment (events + summaries both need it).
+            _segment_result: dict | None = None
+
+            def _get_segment_result() -> dict:
+                nonlocal _segment_result
+                if _segment_result is None:
+                    if clip_path is not None:
+                        try:
+                            from ui_blueprint.extractor import extract_segment
+
+                            _segment_result = extract_segment(clip_path, t0_ms, t1_ms)
+                        except Exception:  # noqa: BLE001
+                            _segment_result = {
+                                "elements_catalog": [],
+                                "chunks": [],
+                                "events": [],
+                                "quality": {},
+                            }
+                    else:
+                        _segment_result = {
+                            "elements_catalog": [],
+                            "chunks": [],
+                            "events": [],
+                            "quality": {},
+                        }
+                return _segment_result
+
+            for toggle, (artifact_type, filename) in enabled_analyses.items():
+                try:
+                    if toggle == "keyframes" and clip_path is not None:
+                        from ui_blueprint.extractor import extract_keyframes
+
+                        data = extract_keyframes(clip_path, t0_ms, t1_ms)
+                        artifact_data = {
+                            "schema_version": "v1",
+                            "segment_id": segment_id,
+                            "t0_ms": t0_ms,
+                            "t1_ms": t1_ms,
+                            "frames": data.get("frames", []),
+                        }
+                    elif toggle == "ocr" and clip_path is not None:
+                        from ui_blueprint.extractor import extract_ocr
+
+                        data = extract_ocr(clip_path, t0_ms, t1_ms)
+                        artifact_data = {
+                            "schema_version": "v1",
+                            "segment_id": segment_id,
+                            "t0_ms": t0_ms,
+                            "t1_ms": t1_ms,
+                            "text_blocks": data.get("text_blocks", []),
+                        }
+                    elif toggle == "transcript" and clip_path is not None:
+                        from ui_blueprint.extractor import extract_transcript
+
+                        data = extract_transcript(clip_path, t0_ms, t1_ms)
+                        artifact_data = {
+                            "schema_version": "v1",
+                            "segment_id": segment_id,
+                            "t0_ms": t0_ms,
+                            "t1_ms": t1_ms,
+                            "transcript": data.get("transcript", ""),
+                        }
+                    elif toggle == "events":
+                        seg_result = _get_segment_result()
+                        artifact_data = {
+                            "schema_version": "v1",
+                            "segment_id": segment_id,
+                            "t0_ms": t0_ms,
+                            "t1_ms": t1_ms,
+                            "events": seg_result.get("events", []),
+                        }
+                    elif toggle == "segment_summaries":
+                        seg_result = _get_segment_result()
+                        catalog = seg_result.get("elements_catalog", [])
+                        events = seg_result.get("events", [])
+                        quality = seg_result.get("quality", {})
+                        artifact_data = {
+                            "schema_version": "v1",
+                            "segment_id": segment_id,
+                            "t0_ms": t0_ms,
+                            "t1_ms": t1_ms,
+                            "summary": {
+                                "element_count": len(catalog),
+                                "event_count": len(events),
+                                "event_kinds": list(
+                                    {e.get("kind", "unknown") for e in events}
+                                ),
+                                "quality": quality,
+                            },
+                        }
+                    else:
+                        # Fallback stub for unknown toggle or missing clip.
+                        artifact_data = {
+                            "schema_version": "v1",
+                            "segment_id": segment_id,
+                            "t0_ms": t0_ms,
+                            "t1_ms": t1_ms,
+                            "type": toggle,
+                            "data": {},
+                        }
+                except Exception:  # noqa: BLE001
+                    artifact_data = {
+                        "schema_version": "v1",
+                        "segment_id": segment_id,
+                        "t0_ms": t0_ms,
+                        "t1_ms": t1_ms,
+                        "type": toggle,
+                        "data": {},
+                    }
+
+                artifact_bytes = _json.dumps(artifact_data, indent=2).encode("utf-8")
+                try:
+                    obj_key = storage.upload_bytes(
+                        folder_id,
+                        f"segments/{segment_id}/{filename}",
+                        artifact_bytes,
+                        "application/json",
+                    )
+                    _create_artifact(folder_id, artifact_type, obj_key)
+                except Exception:
+                    pass  # storage unavailable – still advance cursor
+
+            processed += 1
+    finally:
+        if clip_tmpdir is not None:
+            shutil.rmtree(clip_tmpdir, ignore_errors=True)
 
     new_cursor = cursor + processed
     done = new_cursor >= total

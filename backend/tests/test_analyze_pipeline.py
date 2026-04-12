@@ -1348,3 +1348,132 @@ class TestOptionalAnalyzeJob:
             f"Run 1: {sorted(run1_keys)}\nRun 2: {sorted(run2_keys)}"
         )
         assert len(run1_keys) == n_segments
+
+
+# ---------------------------------------------------------------------------
+# Test: baseline_segments produces real analysis data (non-stub)
+# ---------------------------------------------------------------------------
+
+
+class TestBaselineSegmentsNonStub:
+    """When extract_segment is available and returns data, the uploaded
+    baseline.json must contain an 'analysis' key with real data rather than
+    falling back to the stub 'notes' key."""
+
+    def test_baseline_json_contains_analysis_key_when_extractor_available(self):
+        """Mock extract_segment to return a populated result and verify the
+        uploaded baseline.json contains 'analysis' and not just 'notes'."""
+        import json as _json
+
+        folder_id, job_id = _make_folder_and_job()
+        n_segments = 2
+        manifest_bytes = _make_manifest_bytes_for_folder(folder_id, n_segments)
+
+        _set_job_checkpoint(
+            job_id,
+            status="running",
+            analyze_stage="baseline_segments",
+            analyze_cursor_segment_index=0,
+            analyze_clip_object_key="folders/test/clip.mp4",
+        )
+
+        fake_analysis = {
+            "elements_catalog": [{"id": "el_0000", "type": "button"}],
+            "chunks": [{"t0_ms": 0, "t1_ms": 10000, "events": []}],
+            "events": [],
+            "quality": {"detection_confidence": 0.8},
+        }
+
+        uploaded: dict[str, bytes] = {}
+
+        def fake_upload(folder_id_, filename, data, content_type="application/octet-stream"):
+            key = f"folders/{folder_id_}/{filename}"
+            uploaded[key] = data
+            return key
+
+        with (
+            patch("backend.app.storage.get_object_bytes", return_value=manifest_bytes),
+            patch("backend.app.storage.get_object_to_file", side_effect=_fake_get_to_file),
+            patch("backend.app.storage.upload_bytes", side_effect=fake_upload),
+            patch("backend.app.worker.enqueue_job"),
+            patch(
+                "ui_blueprint.extractor.extract_segment",
+                return_value=fake_analysis,
+            ),
+            patch.dict(os.environ, {"ANALYZE_STEP_MAX_SECONDS": "60"}),
+        ):
+            from backend.app.worker import run_analyze_step
+
+            run_analyze_step(job_id)
+
+        baseline_keys = [k for k in uploaded if k.endswith("baseline.json")]
+        assert len(baseline_keys) == n_segments, (
+            f"Expected {n_segments} baseline uploads, got {baseline_keys}"
+        )
+
+        for key in baseline_keys:
+            data = _json.loads(uploaded[key])
+            assert "analysis" in data, (
+                f"baseline.json at {key} is still a stub – expected 'analysis' key. Got: {data}"
+            )
+            assert "notes" not in data, (
+                f"baseline.json at {key} still contains stub 'notes' key. Got: {data}"
+            )
+            assert data["analysis"]["elements_catalog"] == fake_analysis["elements_catalog"]
+
+    def test_baseline_json_falls_back_to_notes_when_extractor_raises(self):
+        """If extract_segment raises, the baseline.json must contain the 'notes'
+        fallback key and the pipeline must NOT stall (cursor still advances)."""
+        import json as _json
+
+        folder_id, job_id = _make_folder_and_job()
+        n_segments = 2
+        manifest_bytes = _make_manifest_bytes_for_folder(folder_id, n_segments)
+
+        _set_job_checkpoint(
+            job_id,
+            status="running",
+            analyze_stage="baseline_segments",
+            analyze_cursor_segment_index=0,
+            analyze_clip_object_key="folders/test/clip.mp4",
+        )
+
+        uploaded: dict[str, bytes] = {}
+
+        def fake_upload(folder_id_, filename, data, content_type="application/octet-stream"):
+            key = f"folders/{folder_id_}/{filename}"
+            uploaded[key] = data
+            return key
+
+        with (
+            patch("backend.app.storage.get_object_bytes", return_value=manifest_bytes),
+            patch("backend.app.storage.get_object_to_file", side_effect=_fake_get_to_file),
+            patch("backend.app.storage.upload_bytes", side_effect=fake_upload),
+            patch("backend.app.worker.enqueue_job"),
+            patch(
+                "ui_blueprint.extractor.extract_segment",
+                side_effect=RuntimeError("ffmpeg unavailable"),
+            ),
+            patch.dict(os.environ, {"ANALYZE_STEP_MAX_SECONDS": "60"}),
+        ):
+            from backend.app.worker import run_analyze_step
+
+            run_analyze_step(job_id)
+
+        # Even with extractor failure, all segments must be uploaded.
+        baseline_keys = [k for k in uploaded if k.endswith("baseline.json")]
+        assert len(baseline_keys) == n_segments, (
+            f"Pipeline stalled: expected {n_segments} baselines, got {baseline_keys}"
+        )
+
+        # Cursor must have advanced.
+        job = _get_job(job_id)
+        assert job.analyze_cursor_segment_index is not None
+        assert job.analyze_cursor_segment_index >= n_segments
+
+        # Fallback notes key must be present.
+        for key in baseline_keys:
+            data = _json.loads(uploaded[key])
+            assert "notes" in data, (
+                f"Expected fallback 'notes' key in {key}. Got: {data}"
+            )

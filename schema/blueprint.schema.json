@@ -89,7 +89,7 @@
       "additionalProperties": false,
       "properties": {
         "id":        { "type": "string",  "description": "Stable element ID (e.g. 'el_0001')." },
-        "type":      { "type": "string",  "enum": ["text", "button", "icon", "list_item", "container", "scroll_view", "input_field", "keyboard", "cursor", "overlay", "unknown"], "description": "Inferred element type." },
+        "type":      { "type": "string",  "enum": ["text", "button", "icon", "list_item", "container", "scroll_view", "input_field", "keyboard", "cursor", "overlay", "fab", "bottom_sheet", "tab_bar", "toolbar", "snackbar", "dialog", "unknown"], "description": "Inferred element type." },
         "first_ms":  { "type": "number",  "description": "Timestamp (ms) when element first appeared." },
         "last_ms":   { "type": "number",  "description": "Timestamp (ms) when element last appeared." },
         "style": {
@@ -186,7 +186,7 @@
       "additionalProperties": false,
       "properties": {
         "t_ms":       { "type": "number",  "description": "Event timestamp in absolute ms from clip start." },
-        "kind":       { "type": "string",  "enum": ["tap", "long_press", "swipe", "drag", "scroll", "type", "back", "app_switch", "system_dialog", "unknown"], "description": "Event type." },
+        "kind":       { "type": "string",  "enum": ["tap", "long_press", "swipe", "drag", "scroll", "type", "back", "app_switch", "system_dialog", "dismiss", "appear", "unknown"], "description": "Event type." },
         "target": {
           "type": "object",
           "description": "Inferred target of the event.",

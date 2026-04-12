@@ -5,6 +5,9 @@ Validates that:
 - Synthetic extraction produces schema-valid blueprint JSON.
 - The CLI's --synthetic flag works end-to-end.
 - Chunk structure and timeline coverage are correct.
+- New public functions (extract_segment, extract_keyframes, extract_ocr,
+  extract_transcript) return the expected shapes and fall back gracefully.
+- _ocr_region falls back to "" when pytesseract is absent.
 """
 
 from __future__ import annotations
@@ -12,7 +15,9 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
+from unittest.mock import patch
 
 import jsonschema
 import pytest
@@ -20,7 +25,12 @@ import pytest
 from ui_blueprint.extractor import (
     SCHEMA_VERSION,
     _generate_synthetic_frame,
+    _ocr_region,
     extract,
+    extract_keyframes,
+    extract_ocr,
+    extract_segment,
+    extract_transcript,
     save_blueprint,
 )
 
@@ -292,3 +302,134 @@ class TestVideoDecoderPath:
         assert bp["meta"]["height_px"] == 640
         assert bp["elements_catalog"]
         jsonschema.validate(instance=bp, schema=schema)
+
+
+# ---------------------------------------------------------------------------
+# New public extraction helpers
+# ---------------------------------------------------------------------------
+
+
+class TestOcrRegionFallback:
+    """_ocr_region must return "" when pytesseract is not importable."""
+
+    def test_returns_empty_string_when_pytesseract_missing(self) -> None:
+        """Simulate pytesseract being absent via import patch."""
+        from PIL import Image
+
+        img = Image.new("RGB", (100, 30), color=(255, 255, 255))
+        frame_bytes = img.tobytes()
+        bbox = {"x": 0.0, "y": 0.0, "w": 100.0, "h": 30.0}
+
+        with patch.dict("sys.modules", {"pytesseract": None}):
+            result = _ocr_region(frame_bytes, bbox, 100, 30)
+
+        assert result == ""
+
+    def test_returns_empty_string_on_pytesseract_exception(self) -> None:
+        """If pytesseract raises during OCR, return "" without crashing."""
+        from PIL import Image
+
+        img = Image.new("RGB", (100, 30), color=(255, 255, 255))
+        frame_bytes = img.tobytes()
+        bbox = {"x": 0.0, "y": 0.0, "w": 100.0, "h": 30.0}
+
+        mock_pt = types.ModuleType("pytesseract")
+        mock_pt.image_to_string = lambda *_a, **_kw: (_ for _ in ()).throw(  # type: ignore[attr-defined]
+            RuntimeError("tesseract not found")
+        )
+        with patch.dict("sys.modules", {"pytesseract": mock_pt}):
+            result = _ocr_region(frame_bytes, bbox, 100, 30)
+
+        assert result == ""
+
+
+class TestExtractSegmentShape:
+    """extract_segment must return the expected dict shape."""
+
+    def test_returns_empty_on_nonexistent_file(self) -> None:
+        result = extract_segment("/nonexistent/clip.mp4", 0, 5000)
+        assert "elements_catalog" in result
+        assert "chunks" in result
+        assert "events" in result
+        assert "quality" in result
+        assert isinstance(result["elements_catalog"], list)
+        assert isinstance(result["chunks"], list)
+        assert isinstance(result["events"], list)
+
+    def test_returns_empty_on_zero_duration(self) -> None:
+        result = extract_segment("/nonexistent/clip.mp4", 1000, 1000)
+        assert result["elements_catalog"] == []
+        assert result["chunks"] == []
+        assert result["events"] == []
+
+    def test_returns_real_data_for_synthetic_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        video_path = tmp_path / "seg_test.mp4"
+        meta = {
+            "width_px": 368,
+            "height_px": 640,
+            "fps": 12.0,
+            "duration_ms": 3000.0,
+        }
+        frame_interval_ms = 1000.0 / 12.0
+        frames_np = []
+        for idx in range(36):
+            img = _generate_synthetic_frame(meta, idx * frame_interval_ms).resize((368, 640))
+            frames_np.append(numpy.asarray(img))
+
+        with imageio.get_writer(video_path, fps=12, format="FFMPEG") as writer:
+            for frame in frames_np:
+                writer.append_data(frame)
+
+        result = extract_segment(str(video_path), 0, 3000)
+        assert "elements_catalog" in result
+        assert "chunks" in result
+        assert "events" in result
+        assert "quality" in result
+        # With a real video the catalog should be non-empty.
+        assert isinstance(result["elements_catalog"], list)
+
+
+class TestExtractOptionalHelpers:
+    """extract_keyframes, extract_ocr, extract_transcript return correct shapes."""
+
+    def test_extract_keyframes_empty_on_missing_file(self) -> None:
+        result = extract_keyframes("/nonexistent/clip.mp4", 0, 5000)
+        assert "frames" in result
+        assert isinstance(result["frames"], list)
+
+    def test_extract_ocr_empty_on_missing_file(self) -> None:
+        result = extract_ocr("/nonexistent/clip.mp4", 0, 5000)
+        assert "text_blocks" in result
+        assert isinstance(result["text_blocks"], list)
+
+    def test_extract_transcript_returns_empty_string(self, tmp_path: Path) -> None:
+        result = extract_transcript(str(tmp_path / "dummy.mp4"), 0, 5000)
+        assert "transcript" in result
+        assert result["transcript"] == ""
+
+    def test_extract_keyframes_real_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        video_path = tmp_path / "kf_test.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 2000.0}
+        frame_interval_ms = 1000.0 / 12.0
+        frames_np = []
+        for idx in range(24):
+            img = _generate_synthetic_frame(meta, idx * frame_interval_ms).resize((368, 640))
+            frames_np.append(numpy.asarray(img))
+
+        with imageio.get_writer(video_path, fps=12, format="FFMPEG") as writer:
+            for frame in frames_np:
+                writer.append_data(frame)
+
+        result = extract_keyframes(str(video_path), 0, 2000)
+        assert "frames" in result
+        assert isinstance(result["frames"], list)
+        for frame in result["frames"]:
+            assert "t_ms" in frame
+            assert "width" in frame
+            assert "height" in frame

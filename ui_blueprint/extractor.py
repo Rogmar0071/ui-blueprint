@@ -45,7 +45,7 @@ _TRACK_MATCH_THRESHOLD = 0.35
 _LINEAR_RESIDUAL_THRESHOLD = 2.0
 _BEZIER_RESIDUAL_THRESHOLD = 3.5
 _SCROLL_EVENT_THRESHOLD = 12.0
-_TAP_COLOR_THRESHOLD = 14.0
+_TAP_COLOR_THRESHOLD = 8.0
 _FRAME_TIMESTAMP_TOLERANCE_MS = 0.5
 
 
@@ -387,6 +387,8 @@ def _classify_detection(
         ImageStat.Stat(ImageOps.grayscale(crop).filter(ImageFilter.FIND_EDGES)).mean[0] / 255.0
     )
 
+    y_center = (bbox["y"] + bbox["h"] / 2) / max(frame_height, 1)
+
     if area_ratio >= 0.80:
         element_type = "container"
     elif w <= frame_width * 0.14 and h <= frame_height * 0.10:
@@ -397,6 +399,20 @@ def _classify_detection(
         element_type = "list_item"
     elif h >= frame_height * 0.30 and aspect <= 0.9:
         element_type = "scroll_view"
+    elif 0.04 <= area_ratio <= 0.08 and 0.7 <= aspect <= 1.4:
+        element_type = "fab"
+    elif y_center >= 0.75 and aspect >= 3.0 and h <= frame_height * 0.06:
+        element_type = "bottom_sheet"
+    elif y_center >= 0.85 and w >= frame_width * 0.85:
+        element_type = "tab_bar"
+    elif y_center <= 0.12 and w >= frame_width * 0.85:
+        element_type = "toolbar"
+    elif 0.60 <= y_center <= 0.85 and aspect >= 3.0 and area_ratio <= 0.12:
+        element_type = "snackbar"
+    elif 0.2 <= y_center <= 0.8 and 0.15 <= area_ratio <= 0.60 and 0.6 <= aspect <= 2.0:
+        element_type = "dialog"
+    elif aspect >= 3.0 and h <= frame_height * 0.08 and w <= frame_width * 0.92:
+        element_type = "input_field"
     else:
         element_type = "unknown"
 
@@ -413,9 +429,14 @@ def _classify_detection(
 
 
 def _ocr_region(frame_rgb: bytes, bbox: dict[str, float], width: int, height: int) -> str:
-    """Placeholder OCR hook; kept minimal until a real OCR backend is added."""
-    _ = frame_rgb, bbox, width, height
-    return ""
+    """OCR a region using pytesseract when available, otherwise return empty string."""
+    try:
+        import pytesseract  # type: ignore[import]
+
+        image = Image.frombytes("RGB", (width, height), frame_rgb)
+        return pytesseract.image_to_string(image).strip()
+    except Exception:
+        return ""
 
 
 def _detect_elements(frame_rgb: bytes, width: int, height: int) -> list[dict[str, Any]]:
@@ -672,6 +693,58 @@ def _infer_events(
             element["id"]: element for element in chunk_elements[index - 1] if "id" in element
         }
         curr_map = {element["id"]: element for element in chunk_elements[index] if "id" in element}
+
+        # Dismiss event: bbox present in frame N-1 disappears in frame N.
+        for element_id, prev_element in prev_map.items():
+            if element_id not in curr_map and prev_element.get("type") not in {
+                "container",
+                "unknown",
+            }:
+                prev_center = _bbox_center(prev_element["bbox"])
+                mid_ms = (sample_timestamps_ms[index - 1] + sample_timestamps_ms[index]) / 2.0
+                events.append(
+                    {
+                        "t_ms": round(mid_ms, 3),
+                        "kind": "dismiss",
+                        "target": {
+                            "element_id": element_id,
+                            "x": round(prev_center[0], 3),
+                            "y": round(prev_center[1], 3),
+                        },
+                        "data": {"reason": "element_disappeared"},
+                        "confidence": 0.55,
+                    }
+                )
+
+        # Appear event: new large bbox in frame N not present in N-1.
+        for element_id, curr_element in curr_map.items():
+            if element_id not in prev_map and curr_element.get("type") not in {
+                "container",
+                "unknown",
+            }:
+                bbox = curr_element["bbox"]
+                area_ratio = (bbox["w"] * bbox["h"]) / max(
+                    frame_width * frame_height, 1
+                )
+                if area_ratio > 0.1:
+                    curr_center = _bbox_center(bbox)
+                    events.append(
+                        {
+                            "t_ms": sample_timestamps_ms[index],
+                            "kind": "appear",
+                            "target": {
+                                "element_id": element_id,
+                                "x": round(curr_center[0], 3),
+                                "y": round(curr_center[1], 3),
+                            },
+                            "data": {
+                                    "reason": "element_appeared",
+                                    "area_ratio": round(area_ratio, 4),
+                                },
+                            "confidence": 0.55,
+                        }
+                    )
+
         for element_id in prev_map.keys() & curr_map.keys():
             prev_element = prev_map[element_id]
             curr_element = curr_map[element_id]
@@ -971,3 +1044,212 @@ def save_blueprint(blueprint: dict[str, Any], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
         json.dump(blueprint, handle, indent=2, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Public segment-level extraction helpers
+# ---------------------------------------------------------------------------
+
+_EMPTY_SEGMENT_RESULT: dict[str, Any] = {
+    "elements_catalog": [],
+    "chunks": [],
+    "events": [],
+    "quality": {},
+}
+
+
+def _ffmpeg_exe() -> str:
+    """Return the ffmpeg executable path."""
+    try:
+        import imageio_ffmpeg  # type: ignore[import]
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
+def extract_segment(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
+    """
+    Run the full extraction pipeline on [t0_ms, t1_ms) of clip_path.
+
+    Returns a dict with keys: elements_catalog, chunks, events, quality.
+    Falls back to an empty result dict on any error.
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    try:
+        ffmpeg = _ffmpeg_exe()
+        start_s = t0_ms / 1000.0
+        duration_s = max((t1_ms - t0_ms) / 1000.0, 0.1)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            segment_path = tmp.name
+
+        try:
+            cmd = [
+                ffmpeg,
+                "-ss", str(start_s),
+                "-i", clip_path,
+                "-t", str(duration_s),
+                "-c", "copy",
+                "-y",
+                segment_path,
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=120)
+
+            if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
+                result = extract(Path(segment_path))
+                all_events: list[dict[str, Any]] = [
+                    event for chunk in result.get("chunks", []) for event in chunk.get("events", [])
+                ]
+                last_quality = (
+                    result["chunks"][-1].get("quality", {}) if result.get("chunks") else {}
+                )
+                return {
+                    "elements_catalog": result.get("elements_catalog", []),
+                    "chunks": result.get("chunks", []),
+                    "events": all_events,
+                    "quality": last_quality,
+                }
+        finally:
+            try:
+                os.unlink(segment_path)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    return dict(_EMPTY_SEGMENT_RESULT)
+
+
+def extract_keyframes(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
+    """
+    Extract representative keyframes for [t0_ms, t1_ms) of clip_path.
+
+    Returns a dict with key ``frames``: a list of dicts with
+    ``t_ms``, ``width``, and ``height`` fields.
+    Falls back to ``{"frames": []}`` on any error.
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    try:
+        ffmpeg = _ffmpeg_exe()
+        start_s = t0_ms / 1000.0
+        duration_s = max((t1_ms - t0_ms) / 1000.0, 0.1)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pattern = os.path.join(tmpdir, "kf_%04d.jpg")
+            cmd = [
+                ffmpeg,
+                "-ss", str(start_s),
+                "-i", clip_path,
+                "-t", str(duration_s),
+                "-r", "1",
+                "-q:v", "3",
+                "-y",
+                pattern,
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=120)
+
+            frames: list[dict[str, Any]] = []
+            for fname in sorted(os.listdir(tmpdir)):
+                if not fname.endswith(".jpg"):
+                    continue
+                fpath = os.path.join(tmpdir, fname)
+                try:
+                    img = Image.open(fpath)
+                    idx = int(fname.split("_")[1].split(".")[0]) - 1
+                    frames.append(
+                        {
+                            "t_ms": round(t0_ms + idx * 1000.0, 3),
+                            "width": img.width,
+                            "height": img.height,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            return {"frames": frames}
+    except Exception:  # noqa: BLE001
+        return {"frames": []}
+
+
+def extract_ocr(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
+    """
+    Run OCR on sampled frames for [t0_ms, t1_ms) of clip_path.
+
+    Returns a dict with key ``text_blocks``: a list of dicts with
+    ``t_ms`` and ``text`` fields.
+    Falls back to ``{"text_blocks": []}`` on any error.
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    try:
+        pytesseract = None
+        try:
+            import pytesseract as _pytesseract  # type: ignore[import]
+
+            pytesseract = _pytesseract
+        except Exception:  # noqa: BLE001
+            pass
+
+        if pytesseract is None:
+            return {"text_blocks": []}
+
+        ffmpeg = _ffmpeg_exe()
+        start_s = t0_ms / 1000.0
+        duration_s = max((t1_ms - t0_ms) / 1000.0, 0.1)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pattern = os.path.join(tmpdir, "ocr_%04d.jpg")
+            cmd = [
+                ffmpeg,
+                "-ss", str(start_s),
+                "-i", clip_path,
+                "-t", str(duration_s),
+                "-r", "1",
+                "-q:v", "3",
+                "-y",
+                pattern,
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=120)
+
+            text_blocks: list[dict[str, Any]] = []
+            for fname in sorted(os.listdir(tmpdir)):
+                if not fname.endswith(".jpg"):
+                    continue
+                fpath = os.path.join(tmpdir, fname)
+                try:
+                    img = Image.open(fpath)
+                    text = pytesseract.image_to_string(img).strip()
+                    idx = int(fname.split("_")[1].split(".")[0]) - 1
+                    if text:
+                        text_blocks.append(
+                            {
+                                "t_ms": round(t0_ms + idx * 1000.0, 3),
+                                "text": text,
+                            }
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            return {"text_blocks": text_blocks}
+    except Exception:  # noqa: BLE001
+        return {"text_blocks": []}
+
+
+def extract_transcript(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
+    """
+    Extract audio transcript for [t0_ms, t1_ms) of clip_path.
+
+    Returns a dict with key ``transcript``.  Currently returns an empty
+    transcript; a real implementation would call a speech-to-text backend.
+    Falls back gracefully on any error.
+    """
+    return {"transcript": ""}
