@@ -89,6 +89,19 @@ object ArtifactViewerRouter {
             }
             return
         }
+        if (type.startsWith("repo_zip")) {
+            // Repo ZIP: offer download URL — open with ACTION_VIEW as octet-stream
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(Uri.parse(url), "application/zip")
+                if (context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                context.startActivity(intent)
+            } catch (e: ActivityNotFoundException) {
+                Toast.makeText(context, context.getString(R.string.artifact_url_unavailable), Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
         val activityClass = when {
             type.endsWith("_video") -> VideoPlayerActivity::class.java
             type.endsWith("_md") || type == "analysis_md" || type == "blueprint_md" -> TextViewerActivity::class.java

@@ -2176,6 +2176,262 @@ def _analysis_to_blueprint_md(data: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# analyze_repo job — structural analysis of a repository ZIP
+# ---------------------------------------------------------------------------
+
+MAX_REPO_CHARS = int(os.environ.get("ANALYZE_REPO_MAX_CHARS", 60_000))
+
+_REPO_ANALYSIS_SYSTEM_PROMPT = """\
+You are a structural analysis engine. Given a source repository, produce a detailed \
+Structural Map in Markdown covering:
+## Phase 1 — Structural Surface Mapping
+### A. Entry Points
+### B. UI Composition Tree
+### C. State Architecture
+### D. Event Flow
+### E. Domain Boundary
+## Phase 2 — Invariant Detection
+### A. UI Invariants
+### B. State Invariants
+### C. System Invariants
+## Phase 3 — Failure Surface Map
+### Safe Zones
+### Sensitive Zones
+### Critical Spine Components
+## Phases 4–7 — Awaiting Intent
+(State what intent is needed to proceed with controlled change design.)
+Be precise, file-level, and deterministic. No vague suggestions."""
+
+
+def run_analyze_repo_step(job_id: str) -> None:
+    """
+    Structural analysis of a repository ZIP.
+
+    Pipeline:
+    1. Load job + folder from DB.
+    2. Download repo.zip from R2 to a temp file.
+    3. Extract the ZIP and build a file tree (path + size, skip binary files).
+    4. Read text content of files up to a total token budget (~60 000 chars).
+    5. Call OpenAI with a system prompt that performs the 7-phase structural analysis.
+    6. Save the Markdown report as artifact type 'repo_analysis_md'.
+    7. Save a compact JSON summary (file tree + phase 1 map) as 'repo_structure_json'.
+    8. Mark job succeeded, progress=100.
+    """
+    import json
+    import zipfile
+
+    import httpx
+
+    from backend.app import storage
+
+    job = _get_job(job_id)
+    if job is None:
+        logger.error("run_analyze_repo_step: job %s not found", job_id)
+        _log_event(
+            source="worker",
+            level="error",
+            event_type="worker.abandoned",
+            message=f"run_analyze_repo_step: job {job_id} not found in DB",
+            job_id=job_id,
+        )
+        return
+
+    folder_id = str(job.folder_id)
+    _update_job(job_id, status="running", progress=5)
+    _log_event(
+        source="worker",
+        level="info",
+        event_type="jobs.start",
+        message=f"Job analyze_repo started: {job_id}",
+        folder_id=folder_id,
+        job_id=job_id,
+    )
+
+    try:
+        from sqlmodel import Session, select
+
+        from backend.app.database import get_engine
+        from backend.app.models import Artifact
+
+        # Find the repo_zip artifact for this folder.
+        with Session(get_engine()) as session:
+            artifact = session.exec(
+                select(Artifact)
+                .where(Artifact.folder_id == uuid.UUID(folder_id))
+                .where(Artifact.type == "repo_zip")
+                .order_by(Artifact.created_at.desc())
+            ).first()
+
+        if artifact is None:
+            raise RuntimeError("No repo_zip artifact found for folder; upload repo first.")
+
+        repo_key = artifact.object_key
+
+        # Download repo.zip to a temp file.
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            found = storage.get_object_to_file(repo_key, tmp_path)
+            if not found:
+                raise RuntimeError(f"repo.zip not found in storage: {repo_key}")
+
+            _update_job(job_id, progress=20)
+
+            # Extract ZIP and build file tree.
+            file_tree: list[dict] = []
+            text_files: list[tuple[int, str, str]] = []  # (size, path, content)
+
+            _BINARY_EXTENSIONS = {
+                ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
+                ".mp4", ".mov", ".avi", ".mkv", ".webm",
+                ".mp3", ".wav", ".ogg", ".flac",
+                ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+                ".zip", ".tar", ".gz", ".bz2", ".7z",
+                ".exe", ".dll", ".so", ".dylib",
+                ".class", ".jar", ".pyc",
+                ".ttf", ".otf", ".woff", ".woff2",
+                ".db", ".sqlite",
+            }
+
+            with zipfile.ZipFile(tmp_path, "r") as zf:
+                for info in zf.infolist():
+                    rel_path = info.filename
+                    # Skip directories, __pycache__, .git entries.
+                    if info.is_dir():
+                        continue
+                    parts = rel_path.replace("\\", "/").split("/")
+                    if any(p in ("__pycache__", ".git", ".hg", ".svn") for p in parts):
+                        continue
+
+                    size = info.file_size
+                    ext = os.path.splitext(rel_path)[1].lower()
+                    is_text = ext not in _BINARY_EXTENSIONS
+
+                    file_tree.append({"path": rel_path, "size": size, "is_text": is_text})
+
+                    if is_text and size > 0:
+                        try:
+                            raw = zf.read(info.filename)
+                            text = raw.decode("utf-8", errors="replace")
+                            text_files.append((size, rel_path, text))
+                        except Exception:  # noqa: BLE001
+                            pass
+
+            _update_job(job_id, progress=35)
+
+            # Read text content up to MAX_REPO_CHARS, smallest files first.
+            text_files.sort(key=lambda t: t[0])
+            accumulated = 0
+            content_sections: list[str] = []
+            for _size, path, text in text_files:
+                remaining = MAX_REPO_CHARS - accumulated
+                if remaining <= 0:
+                    break
+                chunk = text[:remaining]
+                content_sections.append(f"### File: {path}\n```\n{chunk}\n```")
+                accumulated += len(chunk)
+
+            content_block = (
+                "\n\n".join(content_sections) if content_sections else "(No text files found)"
+            )
+
+            # Build file tree summary for the user message.
+            tree_lines = [f"- {f['path']} ({f['size']} bytes)" for f in file_tree[:200]]
+            if len(file_tree) > 200:
+                tree_lines.append(f"… and {len(file_tree) - 200} more files")
+            tree_summary = "\n".join(tree_lines)
+
+            user_message = (
+                f"## Repository File Tree\n\n{tree_summary}\n\n"
+                f"## File Contents (up to {MAX_REPO_CHARS} chars)\n\n{content_block}"
+            )
+
+            _update_job(job_id, progress=50)
+
+            # Call OpenAI.
+            openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+            if not openai_api_key:
+                raise RuntimeError("OPENAI_API_KEY not configured; cannot run structural analysis.")
+
+            model = os.environ.get("OPENAI_MODEL_CHAT", "gpt-4.1-mini")
+            base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
+            if not base_url.endswith("/v1"):
+                completions_url = f"{base_url}/v1/chat/completions"
+            else:
+                completions_url = f"{base_url}/chat/completions"
+
+            timeout = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", 120))
+
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _REPO_ANALYSIS_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                "max_tokens": 4096,
+                "temperature": 0.3,
+            }
+
+            with httpx.Client(timeout=timeout) as http:
+                response = http.post(
+                    completions_url,
+                    headers={
+                        "Authorization": f"Bearer {openai_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+            response.raise_for_status()
+            analysis_md = response.json()["choices"][0]["message"]["content"].strip()
+
+            _update_job(job_id, progress=80)
+
+            # Save Markdown report as repo_analysis_md artifact.
+            md_bytes = analysis_md.encode("utf-8")
+            md_key = storage.upload_bytes(folder_id, "repo_analysis.md", md_bytes, "text/markdown")
+            _create_artifact(folder_id, "repo_analysis_md", md_key)
+
+            # Save compact JSON summary as repo_structure_json artifact.
+            structure_json = json.dumps(
+                {"file_tree": file_tree, "phase1_map": analysis_md[:2000]},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            json_key = storage.upload_bytes(
+                folder_id, "repo_structure.json", structure_json, "application/json"
+            )
+            _create_artifact(folder_id, "repo_structure_json", json_key)
+
+            _update_job(job_id, status="succeeded", progress=100)
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="jobs.succeeded",
+                message=f"Job analyze_repo succeeded: {job_id}",
+                folder_id=folder_id,
+                job_id=job_id,
+            )
+
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:  # noqa: BLE001
+                pass
+
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("run_analyze_repo_step failed: %s", exc)
+        _update_job(job_id, status="failed", progress=0)
+        _log_event(
+            source="worker",
+            level="error",
+            event_type="jobs.failed",
+            message=f"Job analyze_repo failed: {job_id} — {exc}",
+            folder_id=folder_id,
+            job_id=job_id,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Job-function registry
 # ---------------------------------------------------------------------------
 
@@ -2183,4 +2439,5 @@ _JOB_FUNCTIONS = {
     "analyze": run_analyze_step,
     "analyze_optional": run_analyze_optional_step,
     "blueprint": run_blueprint,
+    "analyze_repo": run_analyze_repo_step,
 }

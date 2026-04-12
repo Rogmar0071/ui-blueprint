@@ -35,6 +35,8 @@ exposes the results over HTTP.
 | `GET`  | `/v1/folders/{id}` | Get folder + latest job status + artifact list |
 | `DELETE` | `/v1/folders/{id}` | Delete folder (cascade) |
 | `POST` | `/v1/folders/{id}/clip` | Upload clip to folder (creates analyze job) |
+| `POST` | `/v1/folders/{id}/audio` | Upload audio file to folder |
+| `POST` | `/v1/folders/{id}/repo` | Upload repo ZIP → structural analysis job |
 | `GET`  | `/v1/folders/{id}/artifacts/{artifact_id}` | Presigned download URL for artifact |
 | `POST` | `/v1/folders/{id}/messages` | Send a chat message (AI replies, persisted) |
 | `GET`  | `/v1/folders/{id}/messages` | List folder chat history |
@@ -231,6 +233,7 @@ To serve over HTTPS, install Nginx + Certbot, configure a proxy_pass to `localho
 | `ANALYZE_MAX_SEGMENTS` | `600` | Maximum segments in a manifest (bounds output size) |
 | `ANALYZE_STEP_MAX_SECONDS` | `30` | Wall-clock budget (s) per baseline_segments / optional step |
 | `ANALYZE_ENABLE_OPTIONAL_DEFAULT` | `0` | Set to `1` to enable `additional_analysis` by default |
+| `ANALYZE_REPO_MAX_CHARS` | `60000` | Max characters read from repo files for analysis |
 
 > **Port**: Render sets `$PORT` automatically; the server binds `${PORT:-8000}` (defaults to `8000` for local dev).
 

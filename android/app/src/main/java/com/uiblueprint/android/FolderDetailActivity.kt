@@ -203,6 +203,17 @@ class FolderDetailActivity : AppCompatActivity() {
         }
     }
 
+    // Repo ZIP picker launcher.
+    private val repoZipPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            uploadRepoZip(uri)
+        } else {
+            setActionStatus(null)
+        }
+    }
+
     // Receives CAPTURE_DONE broadcast from CaptureService.
     private val captureReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -1388,6 +1399,10 @@ class FolderDetailActivity : AppCompatActivity() {
             sheet.dismiss()
             galleryPickLauncher.launch("video/*")
         }
+        view.findViewById<ImageButton>(R.id.btnAttachRepoZip).setOnClickListener {
+            sheet.dismiss()
+            repoZipPickerLauncher.launch("application/zip")
+        }
         view.findViewById<ImageButton>(R.id.btnAttachCamera).setOnClickListener {
             sheet.dismiss()
             Toast.makeText(this, "Camera coming soon", Toast.LENGTH_SHORT).show()
@@ -1403,6 +1418,72 @@ class FolderDetailActivity : AppCompatActivity() {
         // Show video row in FolderDetailActivity
         view.findViewById<View>(R.id.rowAttach2)?.visibility = View.VISIBLE
         sheet.show()
+    }
+
+    private fun uploadRepoZip(uri: Uri) {
+        setActionStatus(getString(R.string.status_uploading_repo))
+        clipUploadExecutor.execute {
+            try {
+                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+                val apiKey = BuildConfig.BACKEND_API_KEY
+
+                val fileName = contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (c.moveToFirst() && idx >= 0) c.getString(idx) else "repo.zip"
+                } ?: "repo.zip"
+
+                val inputStream = contentResolver.openInputStream(uri)
+                    ?: throw IOException("Cannot open URI: $uri")
+
+                val requestBody = object : RequestBody() {
+                    override fun contentType() = "application/zip".toMediaType()
+                    override fun writeTo(sink: BufferedSink) {
+                        sink.writeAll(inputStream.source())
+                    }
+                }
+
+                val multipart = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("repo", fileName, requestBody)
+                    .build()
+
+                val request = Request.Builder()
+                    .url("$baseUrl/v1/folders/$folderId/repo")
+                    .post(multipart)
+                    .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+                    .build()
+
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            setActionStatus(getString(R.string.status_repo_upload_succeeded))
+                            Toast.makeText(
+                                this,
+                                getString(R.string.toast_repo_analysis_queued),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            loadFolder()
+                        } else {
+                            setActionStatus(getString(R.string.status_repo_upload_failed))
+                            Toast.makeText(
+                                this,
+                                "${getString(R.string.status_repo_upload_failed)} HTTP ${resp.code}",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+            } catch (e: IOException) {
+                runOnUiThread {
+                    setActionStatus(getString(R.string.status_repo_upload_failed))
+                    Toast.makeText(
+                        this,
+                        "${getString(R.string.status_repo_upload_failed)}: ${e.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
     }
 
     companion object {

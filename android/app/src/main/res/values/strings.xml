@@ -129,4 +129,11 @@
     <string name="status_audio_upload_succeeded">Audio uploaded.</string>
     <string name="status_audio_upload_failed">Audio upload failed.</string>
     <string name="audio_capture_channel_name">Audio Recording</string>
+    <!-- Repo ZIP upload -->
+    <string name="btn_upload_repo">Upload Repo ZIP</string>
+    <string name="attach_repo_zip">Repo ZIP</string>
+    <string name="status_uploading_repo">Uploading repository…</string>
+    <string name="status_repo_upload_succeeded">Repository uploaded. Analysis queued.</string>
+    <string name="status_repo_upload_failed">Repository upload failed.</string>
+    <string name="toast_repo_analysis_queued">Structural analysis queued.</string>
 </resources>

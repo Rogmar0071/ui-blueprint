@@ -578,6 +578,73 @@ async def upload_audio(
 
 
 # ---------------------------------------------------------------------------
+# POST /v1/folders/{folder_id}/repo  — upload repository ZIP
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{folder_id}/repo", status_code=202, dependencies=[Depends(require_auth)])
+async def upload_repo(
+    folder_id: str,
+    repo: UploadFile,
+    db=Depends(_db_session),
+) -> JSONResponse:
+    """
+    Accept a .zip repository upload, store it in R2, create an Artifact record
+    (type='repo_zip'), and enqueue an 'analyze_repo' job.
+
+    Returns 202 Accepted with the created job info.
+    """
+    from backend.app import storage, worker
+    from backend.app.models import Artifact, Job
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    _folder_or_404(db, fid)
+
+    if not storage.storage_available():
+        raise HTTPException(status_code=502, detail="Storage not configured")
+
+    data = await repo.read()
+    key = storage.upload_bytes(str(fid), "repo.zip", data, "application/zip")
+
+    artifact = Artifact(folder_id=fid, type="repo_zip", object_key=key)
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+
+    job = Job(folder_id=fid, type="analyze_repo")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    job_id_str = str(job.id)
+    rq_id = worker.enqueue_job(job_id_str, "analyze_repo")
+    if rq_id:
+        job.rq_job_id = rq_id
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+    log_event(
+        source="backend",
+        level="info",
+        event_type="repo.upload.succeeded",
+        message=f"Repo upload succeeded for folder {fid}, job {job.id} enqueued",
+        folder_id=str(fid),
+        job_id=str(job.id),
+        details_json={"repo_object_key": key},
+    )
+
+    return JSONResponse(
+        content={
+            "folder_id": folder_id,
+            "job": _job_dict(job),
+            "repo_object_key": key,
+        },
+        status_code=202,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /v1/folders/{folder_id}/artifacts/{artifact_id}  — download/presign
 # ---------------------------------------------------------------------------
 
