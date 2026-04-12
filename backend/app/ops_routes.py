@@ -192,7 +192,7 @@ def list_ops_for_folder(
 # Internal helper: summarized ops window for AI context injection
 # ---------------------------------------------------------------------------
 
-_OPS_WINDOW_LIMIT = 40
+_OPS_WINDOW_LIMIT = 15
 
 
 def build_ops_context_snippet(db) -> str:

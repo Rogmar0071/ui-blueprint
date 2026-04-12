@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MODEL_CHAT = "gpt-4.1-mini"
 _DEFAULT_BASE_URL = "https://api.openai.com"
 _DEFAULT_TIMEOUT = 30.0
-_GLOBAL_CHAT_HISTORY_LIMIT = 20
+_GLOBAL_CHAT_HISTORY_LIMIT = 10
 
 _TOOLS_AVAILABLE = [
     "domains.derive",
@@ -297,8 +297,8 @@ def _call_openai_chat(
     payload = {
         "model": model,
         "messages": prompt_messages,
-        "max_tokens": 512,
-        "temperature": 0.7,
+        "max_tokens": 350,
+        "temperature": 0.3,
     }
 
     with httpx.Client(timeout=timeout) as http:

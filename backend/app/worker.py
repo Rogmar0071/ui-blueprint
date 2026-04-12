@@ -1036,11 +1036,133 @@ def _analyze_aggregate(job_id: str, folder_id: str, job) -> None:
         job_id=job_id,
     )
 
+    # Generate IntentPack from baseline segment artifacts (best-effort).
+    _generate_folder_intent_pack(job_id, folder_id)
+
     # Auto-enqueue analyze_optional when the user opted in.
     options = _get_analyze_options(job)
     aa = options.get("additional_analysis", {})
     if aa.get("enabled", False):
         _enqueue_analyze_optional(folder_id, options)
+
+
+def _generate_folder_intent_pack(job_id: str, folder_id: str) -> None:
+    """
+    After baseline segment analysis completes, collect all baseline segment
+    JSON artifacts for the folder, call generate_intent_pack(), and upload
+    the result as an Artifact of type 'intent_pack'.
+
+    This is a best-effort stage: any error is logged but does NOT fail the job.
+    """
+    import json as _json
+    import tempfile
+
+    from sqlmodel import Session, select
+
+    from backend.app import storage
+    from backend.app.database import get_engine
+    from backend.app.models import Artifact
+    from ui_blueprint.intent_pack import generate_intent_pack
+
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        _log_event(
+            source="worker",
+            level="info",
+            event_type="intent_pack.skipped",
+            message="OPENAI_API_KEY not set; skipping IntentPack generation",
+            folder_id=folder_id,
+            job_id=job_id,
+        )
+        return
+
+    try:
+        with Session(get_engine()) as db:
+            fid = uuid.UUID(folder_id)
+
+            # Collect all baseline segment artifacts for this folder
+            segment_artifacts = db.exec(
+                select(Artifact)
+                .where(Artifact.folder_id == fid)
+                .where(Artifact.type == "baseline_segment_json")
+                .order_by(Artifact.created_at.asc())
+            ).all()
+
+            if not segment_artifacts:
+                _log_event(
+                    source="worker",
+                    level="info",
+                    event_type="intent_pack.skipped",
+                    message="No baseline_segment_json artifacts found; skipping IntentPack",
+                    folder_id=folder_id,
+                    job_id=job_id,
+                )
+                return
+
+            # Download and parse each segment JSON
+            segments = []
+            for artifact in segment_artifacts:
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                        tmp_path = tmp.name
+                    storage.get_object_to_file(artifact.object_key, tmp_path)
+                    with open(tmp_path, "r", encoding="utf-8") as f:
+                        seg_data = _json.load(f)
+                    segments.append(seg_data)
+                except Exception as seg_exc:
+                    logger.warning("Could not load segment artifact %s: %s", artifact.id, seg_exc)
+                    continue
+
+            if not segments:
+                return
+
+            # Generate IntentPack via OpenAI
+            intent_pack = generate_intent_pack(segments=segments, api_key=api_key)
+
+            # Upload IntentPack as JSON artifact
+            intent_bytes = _json.dumps(intent_pack, indent=2, ensure_ascii=False).encode("utf-8")
+            object_key = storage.upload_bytes(
+                folder_id,
+                "intent_pack.json",
+                intent_bytes,
+                "application/json",
+            )
+
+            artifact = Artifact(
+                folder_id=fid,
+                type="intent_pack",
+                object_key=object_key,
+            )
+            db.add(artifact)
+            db.commit()
+
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="intent_pack.generated",
+                message=f"IntentPack generated for folder {folder_id}",
+                folder_id=folder_id,
+                job_id=job_id,
+                details_json={
+                    "n_segments": len(segments),
+                    "app_domain": intent_pack.get("app_domain", "unknown"),
+                    "n_screens": len(intent_pack.get("screens", [])),
+                    "n_code_hints": len(intent_pack.get("code_hints", [])),
+                },
+            )
+
+    except Exception as exc:
+        logger.warning("IntentPack stage failed (non-fatal): %s", exc)
+        _log_event(
+            source="worker",
+            level="warning",
+            event_type="intent_pack.failed",
+            message=f"IntentPack generation failed (non-fatal): {exc}",
+            folder_id=folder_id,
+            job_id=job_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc)[:500],
+        )
 
 
 def _enqueue_analyze_optional(folder_id: str, options: dict) -> None:

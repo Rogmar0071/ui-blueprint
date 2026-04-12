@@ -79,33 +79,12 @@ def _build_completions_url(base: str) -> str:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are an expert domain analyst for a visual AI pipeline called ui-blueprint.
-Analyse the media description provided and propose domain profile candidates.
+You are a domain analyst for ui-blueprint. Given a media description, propose domain profile candidates.
 
-A domain profile describes a real-world artefact class.  Respond ONLY with valid
-JSON (no markdown fences, no prose) matching exactly this schema:
+Respond ONLY with valid JSON (no fences, no prose) with this structure:
+{{"candidates": [{{"name": str, "capture_protocol": [{{"step_id": str, "title": str, "instructions": str, "required": bool}}], "validators": [{{"id": str, "type": str, "params": {{}}}}], "exporters": [{{"id": str, "type": str, "params": {{}}}}], "notes": str, "confidence": float}}]}}
 
-{{
-  "candidates": [
-    {{
-      "name": "short human-readable domain name",
-      "capture_protocol": [
-        {{"step_id": "slug", "title": "...", "instructions": "...", "required": true}}
-      ],
-      "validators": [
-        {{"id": "slug", "type": "rule_type", "params": {{}}}}
-      ],
-      "exporters": [
-        {{"id": "slug", "type": "export_type", "params": {{}}}}
-      ],
-      "notes": "one-sentence summary",
-      "confidence": 0.90
-    }}
-  ]
-}}
-
-Return between 1 and {max_candidates} candidates, highest confidence first.
-Each candidate must have at least 2 capture_protocol steps, 1 validator, 1 exporter.
+Return 1–{max_candidates} candidates, highest confidence first. Each must have ≥2 capture steps, ≥1 validator, ≥1 exporter.
 """
 
 _USER_PROMPT_TEMPLATE = """\
@@ -222,7 +201,7 @@ class OpenAIDomainDerivationProvider(DomainDerivationProvider):
                 {"role": "user", "content": user_msg},
             ],
             "temperature": 0.3,
-            "max_tokens": 2048,
+            "max_tokens": 700,
         }
 
         url = _build_completions_url(self._base_url)

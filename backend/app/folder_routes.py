@@ -677,14 +677,14 @@ def _build_folder_context(folder, jobs: list, artifacts: list) -> str:
             if job.progress:
                 line += f" ({job.progress}%)"
             if job.error:
-                line += f" [error: {job.error[:100]}]"
+                line += f" [error: {job.error[:80]}]"
             lines.append(line)
     else:
         lines.append("Jobs: none yet.")
 
     if artifacts:
         lines.append("Artifacts:")
-        for artifact in artifacts[:10]:
+        for artifact in artifacts[:5]:
             lines.append(f"  - {artifact.type}")
     else:
         lines.append("Artifacts: none yet.")
@@ -721,6 +721,7 @@ def _call_openai_responses_api(
         model=model,
         instructions=instructions,
         input=input_messages,
+        max_output_tokens=400,
     )
     return response.output_text
 
@@ -787,12 +788,12 @@ def post_message(
     db.commit()
     db.refresh(user_msg)
 
-    # Build conversation history (last 20 messages, excluding the one just saved).
+    # Build conversation history (last 10 messages, excluding the one just saved).
     history = db.exec(
         select(FolderMessage)
         .where(FolderMessage.folder_id == fid)
         .order_by(FolderMessage.created_at.desc())
-        .limit(20)
+        .limit(10)
     ).all()
     history = list(reversed(history))
 
@@ -1176,3 +1177,66 @@ def get_job(folder_id: str, job_id: str, db=Depends(_db_session)) -> JSONRespons
         raise HTTPException(status_code=404, detail="Job not found")
 
     return JSONResponse(content={"job": _job_dict(job)})
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/folders/{folder_id}/intent  — get IntentPack
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{folder_id}/intent", dependencies=[Depends(require_auth)])
+def get_intent_pack(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
+    """
+    Return the latest IntentPack artifact for the folder as parsed JSON.
+
+    The IntentPack is an agent-consumable structured document containing
+    inferred app domain, screens, user flows, and code hints derived from
+    the segment analysis pipeline.
+
+    Returns 404 if no intent_pack artifact exists yet.
+    Returns 503 if storage is unavailable.
+    """
+    import json
+    import tempfile
+
+    from sqlmodel import select
+
+    from backend.app import storage
+    from backend.app.models import Artifact
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    _folder_or_404(db, fid)
+
+    # Find the most recent intent_pack artifact
+    artifact = db.exec(
+        select(Artifact)
+        .where(Artifact.folder_id == fid)
+        .where(Artifact.type == "intent_pack")
+        .order_by(Artifact.created_at.desc())
+    ).first()
+
+    if artifact is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No IntentPack available yet. Run analysis first.",
+        )
+
+    if not storage.storage_available():
+        raise HTTPException(status_code=503, detail="Storage not configured")
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+        storage.get_object_to_file(artifact.object_key, tmp_path)
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            intent_pack = json.load(f)
+    except Exception as exc:
+        logger.error("Failed to load IntentPack artifact: %s", exc)
+        raise HTTPException(status_code=502, detail="Could not load IntentPack") from exc
+
+    return JSONResponse(content={
+        "folder_id": folder_id,
+        "artifact_id": str(artifact.id),
+        "created_at": _dt(artifact.created_at),
+        "intent_pack": intent_pack,
+    })
