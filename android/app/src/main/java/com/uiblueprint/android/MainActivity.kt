@@ -254,6 +254,7 @@ class MainActivity : AppCompatActivity(),
                     binding.drawerLayout.closeDrawers()
                     val intent = Intent(this, FolderDetailActivity::class.java)
                     intent.putExtra(FolderDetailActivity.EXTRA_FOLDER_ID, folderId)
+                    intent.putExtra(FolderDetailActivity.EXTRA_FOLDER_TITLE, label)
                     startActivity(intent)
                 }
             } catch (e: IOException) {

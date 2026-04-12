@@ -68,8 +68,26 @@ object ArtifactViewerRouter {
     }
 
     private fun launchViewer(context: Context, type: String, url: String) {
+        if (type == "clip") {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(android.net.Uri.parse(url), "video/mp4")
+                if (context !is android.app.Activity) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            try {
+                context.startActivity(intent)
+            } catch (e: android.content.ActivityNotFoundException) {
+                android.widget.Toast.makeText(
+                    context,
+                    context.getString(R.string.artifact_url_unavailable),
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
+            return
+        }
         val activityClass = when {
-            type == "clip" || type.endsWith("_video") -> VideoPlayerActivity::class.java
+            type.endsWith("_video") -> VideoPlayerActivity::class.java
             type.endsWith("_md") || type == "analysis_md" || type == "blueprint_md" -> TextViewerActivity::class.java
             type.endsWith("_json") -> TextViewerActivity::class.java
             type.contains("audio") -> AudioPlayerActivity::class.java

@@ -414,13 +414,21 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
             )
             raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}") from exc
 
-        # Persist clip artifact.
-        artifact = Artifact(
-            folder_id=fid,
-            type="clip",
-            object_key=clip_key,
-        )
-        db.add(artifact)
+        # Persist clip artifact (upsert — one clip artifact per folder).
+        from sqlmodel import select as _select
+        existing_clip = db.exec(
+            _select(Artifact).where(Artifact.folder_id == fid, Artifact.type == "clip")
+        ).first()
+        if existing_clip is not None:
+            existing_clip.object_key = clip_key
+            db.add(existing_clip)
+        else:
+            artifact = Artifact(
+                folder_id=fid,
+                type="clip",
+                object_key=clip_key,
+            )
+            db.add(artifact)
 
     # Update folder clip_object_key.
     folder.clip_object_key = clip_key

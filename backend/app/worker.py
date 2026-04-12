@@ -192,7 +192,7 @@ def _create_artifact(folder_id: str, artifact_type: str, object_key: str) -> Non
 
     # Aggregate artifact types that should be upserted (one per folder).
     # Per-segment artifacts (baseline_segment_json, keyframes_segment_json, etc.)
-    # and clip artifacts always use INSERT so all records are retained.
+    # always use INSERT so all records are retained.
     UPSERT_TYPES = {
         "analysis_json",
         "analysis_md",
@@ -200,6 +200,7 @@ def _create_artifact(folder_id: str, artifact_type: str, object_key: str) -> Non
         "blueprint_md",
         "segments_manifest_json",
         "preview_png",
+        "clip",
     }
 
     with Session(get_engine()) as session:

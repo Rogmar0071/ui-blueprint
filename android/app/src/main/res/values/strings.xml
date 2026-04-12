@@ -112,8 +112,13 @@
     <string name="btn_pick_clip">Pick a clip</string>
     <string name="label_no_clip_hint">Upload a clip before analyzing.</string>
     <!-- Analyze bottom sheet – additional analysis -->
-    <string name="label_additional_analysis">▶ Additional analysis</string>
+    <string name="label_additional_analysis">Additional analysis</string>
     <string name="label_additional_analysis_expanded">▼ Additional analysis</string>
+    <string name="label_keyframes">Keyframes</string>
+    <string name="label_ocr">OCR</string>
+    <string name="label_transcript">Transcript</string>
+    <string name="label_events">Events</string>
+    <string name="label_segment_summaries">Segment summaries</string>
     <string name="toggle_keyframes">Keyframes</string>
     <string name="toggle_ocr">OCR (text recognition)</string>
     <string name="toggle_transcript">Transcript</string>
