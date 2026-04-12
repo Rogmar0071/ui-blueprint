@@ -262,13 +262,21 @@ class FolderDetailActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         supportActionBar?.title = getString(R.string.folder_detail_title)
 
+        val initialTitle = intent.getStringExtra(EXTRA_FOLDER_TITLE)
+        if (!initialTitle.isNullOrBlank()) {
+            binding.tvFolderTitle.text = initialTitle
+            supportActionBar?.title = initialTitle
+        }
+
         binding.btnRecord.setOnClickListener { onRecordClicked() }
         binding.btnPickGallery.setOnClickListener { onPickGalleryClicked() }
         binding.btnAnalyze.setOnClickListener { showAnalyzeBottomSheet() }
         binding.btnRecordAudio.setOnClickListener { onRecordAudioClicked() }
         binding.btnSend.setOnClickListener { onSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
-        binding.tvFolderTitle.text = getString(R.string.folder_detail_title)
+        if (initialTitle.isNullOrBlank()) {
+            binding.tvFolderTitle.text = getString(R.string.folder_detail_title)
+        }
         binding.tvFolderStatus.text = getString(R.string.folder_loading)
         binding.tvFolderId.text = getString(R.string.label_folder_id, folderId)
 
@@ -1262,34 +1270,38 @@ class FolderDetailActivity : AppCompatActivity() {
             galleryPickLauncher.launch("video/*")
         }
 
-        // Additional analysis expandable section
-        val tvAdditionalHeader = view.findViewById<TextView>(R.id.tvAdditionalAnalysisHeader)
-        val layoutAdditional = view.findViewById<LinearLayout>(R.id.layoutAdditionalAnalysis)
-        tvAdditionalHeader.setOnClickListener {
-            if (layoutAdditional.visibility == View.VISIBLE) {
-                layoutAdditional.visibility = View.GONE
-                tvAdditionalHeader.text = getString(R.string.label_additional_analysis)
-            } else {
-                layoutAdditional.visibility = View.VISIBLE
-                tvAdditionalHeader.text = getString(R.string.label_additional_analysis_expanded)
-            }
+        // Additional analysis master toggle
+        val switchAdditionalAnalysis = view.findViewById<androidx.appcompat.widget.SwitchCompat>(R.id.switchAdditionalAnalysis)
+        val layoutAdditionalOptions = view.findViewById<LinearLayout>(R.id.layoutAdditionalOptions)
+        switchAdditionalAnalysis.setOnCheckedChangeListener { _, isChecked ->
+            layoutAdditionalOptions.visibility = if (isChecked) View.VISIBLE else View.GONE
         }
 
-        val cbKeyframes = view.findViewById<CheckBox>(R.id.cbKeyframes)
-        val cbOcr = view.findViewById<CheckBox>(R.id.cbOcr)
-        val cbTranscript = view.findViewById<CheckBox>(R.id.cbTranscript)
-        val cbEvents = view.findViewById<CheckBox>(R.id.cbEvents)
-        val cbSegmentSummaries = view.findViewById<CheckBox>(R.id.cbSegmentSummaries)
+        val checkboxKeyframes = view.findViewById<CheckBox>(R.id.checkboxKeyframes)
+        val checkboxOcr = view.findViewById<CheckBox>(R.id.checkboxOcr)
+        val checkboxTranscript = view.findViewById<CheckBox>(R.id.checkboxTranscript)
+        val checkboxEvents = view.findViewById<CheckBox>(R.id.checkboxEvents)
+        val checkboxSegmentSummaries = view.findViewById<CheckBox>(R.id.checkboxSegmentSummaries)
 
         btnAnalyzeStandard.setOnClickListener {
             sheet.dismiss()
-            val opts = buildAdditionalAnalysisOptions(cbKeyframes, cbOcr, cbTranscript, cbEvents, cbSegmentSummaries)
+            val opts = JSONObject().apply {
+                val aa = JSONObject().apply {
+                    val enabled = switchAdditionalAnalysis.isChecked
+                    put("enabled", enabled)
+                    put("keyframes", enabled && checkboxKeyframes.isChecked)
+                    put("ocr", enabled && checkboxOcr.isChecked)
+                    put("transcript", enabled && checkboxTranscript.isChecked)
+                    put("events", enabled && checkboxEvents.isChecked)
+                    put("segment_summaries", enabled && checkboxSegmentSummaries.isChecked)
+                }
+                put("additional_analysis", aa)
+            }
             enqueueAnalyzeJob(opts)
         }
         btnAnalyzeRerun.setOnClickListener {
             sheet.dismiss()
-            val opts = buildAdditionalAnalysisOptions(cbKeyframes, cbOcr, cbTranscript, cbEvents, cbSegmentSummaries)
-            enqueueAnalyzeJobForced(opts)
+            enqueueAnalyzeJobForced(JSONObject())
         }
         view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnViewLastAnalysis)
             .setOnClickListener {
@@ -1297,27 +1309,6 @@ class FolderDetailActivity : AppCompatActivity() {
                 openLastAnalysisArtifact()
             }
         sheet.show()
-    }
-
-    private fun buildAdditionalAnalysisOptions(
-        cbKeyframes: CheckBox,
-        cbOcr: CheckBox,
-        cbTranscript: CheckBox,
-        cbEvents: CheckBox,
-        cbSegmentSummaries: CheckBox,
-    ): JSONObject {
-        val anyEnabled = cbKeyframes.isChecked || cbOcr.isChecked ||
-            cbTranscript.isChecked || cbEvents.isChecked || cbSegmentSummaries.isChecked
-        return JSONObject().apply {
-            put("additional_analysis", JSONObject().apply {
-                put("enabled", anyEnabled)
-                put("keyframes", cbKeyframes.isChecked)
-                put("ocr", cbOcr.isChecked)
-                put("transcript", cbTranscript.isChecked)
-                put("events", cbEvents.isChecked)
-                put("segment_summaries", cbSegmentSummaries.isChecked)
-            })
-        }
     }
 
     private fun enqueueAnalyzeJobForced(options: JSONObject = JSONObject()) {
@@ -1416,6 +1407,7 @@ class FolderDetailActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_FOLDER_ID = "folder_id"
+        const val EXTRA_FOLDER_TITLE = "folder_title"
         private const val RECORDING_TIMEOUT_MS = 30_000L
         private const val POLL_INTERVAL_MS = 2_000L
         private val ACTIVE_JOB_STATUSES = setOf("queued", "running")

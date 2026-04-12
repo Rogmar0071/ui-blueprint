@@ -104,20 +104,23 @@
         android:background="@color/divider"
         android:layout_marginTop="4dp" />
 
-    <!-- Additional analysis expandable section -->
-    <TextView
-        android:id="@+id/tvAdditionalAnalysisHeader"
+    <!-- Additional analysis master toggle -->
+    <androidx.appcompat.widget.SwitchCompat
+        android:id="@+id/switchAdditionalAnalysis"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="16dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
         android:text="@string/label_additional_analysis"
         android:textColor="@color/text_primary"
         android:textSize="14sp"
         android:textStyle="bold"
-        android:background="?attr/selectableItemBackground" />
+        android:checked="false" />
 
     <LinearLayout
-        android:id="@+id/layoutAdditionalAnalysis"
+        android:id="@+id/layoutAdditionalOptions"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
@@ -127,42 +130,42 @@
         android:visibility="gone">
 
         <CheckBox
-            android:id="@+id/cbKeyframes"
+            android:id="@+id/checkboxKeyframes"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/toggle_keyframes"
+            android:text="@string/label_keyframes"
             android:textColor="@color/text_primary"
             android:checked="false" />
 
         <CheckBox
-            android:id="@+id/cbOcr"
+            android:id="@+id/checkboxOcr"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/toggle_ocr"
+            android:text="@string/label_ocr"
             android:textColor="@color/text_primary"
             android:checked="false" />
 
         <CheckBox
-            android:id="@+id/cbTranscript"
+            android:id="@+id/checkboxTranscript"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/toggle_transcript"
+            android:text="@string/label_transcript"
             android:textColor="@color/text_primary"
             android:checked="false" />
 
         <CheckBox
-            android:id="@+id/cbEvents"
+            android:id="@+id/checkboxEvents"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/toggle_events"
+            android:text="@string/label_events"
             android:textColor="@color/text_primary"
             android:checked="false" />
 
         <CheckBox
-            android:id="@+id/cbSegmentSummaries"
+            android:id="@+id/checkboxSegmentSummaries"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/toggle_segment_summaries"
+            android:text="@string/label_segment_summaries"
             android:textColor="@color/text_primary"
             android:checked="false" />
 

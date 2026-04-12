@@ -51,6 +51,7 @@ class FolderAdapter(
         holder.itemView.setOnClickListener {
             val intent = Intent(holder.itemView.context, FolderDetailActivity::class.java)
             intent.putExtra(FolderDetailActivity.EXTRA_FOLDER_ID, item.id)
+            intent.putExtra(FolderDetailActivity.EXTRA_FOLDER_TITLE, item.label)
             holder.itemView.context.startActivity(intent)
         }
 
