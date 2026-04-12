@@ -86,4 +86,23 @@
     <string name="hint_reply_folder">Message…</string>
     <string name="hint_reply_main">Message UI Blueprint…</string>
     <string name="btn_search">Search</string>
+    <!-- Expandable section labels -->
+    <string name="label_supporting_data">Supporting data</string>
+    <!-- Analyze bottom sheet -->
+    <string name="analyze_options_title">Analyze options</string>
+    <string name="btn_analyze_standard">Analyze clip</string>
+    <string name="btn_analyze_rerun">Re-analyze (force new job)</string>
+    <string name="btn_view_last_analysis">View last analysis</string>
+    <string name="toast_no_analysis_yet">No analysis artifact available yet</string>
+    <!-- Attach bottom sheet -->
+    <string name="attach_gallery">Gallery</string>
+    <string name="attach_camera">Camera</string>
+    <string name="attach_document">Document</string>
+    <string name="attach_audio">Audio</string>
+    <string name="attach_video">Video</string>
+    <!-- Artifact viewer -->
+    <string name="artifact_viewer_loading">Loading artifact…</string>
+    <string name="artifact_url_unavailable">Artifact URL not available</string>
+    <!-- Text viewer share menu -->
+    <string name="action_share_text">Share</string>
 </resources>

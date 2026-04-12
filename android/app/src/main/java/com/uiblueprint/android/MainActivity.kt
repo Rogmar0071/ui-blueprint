@@ -10,12 +10,15 @@ import android.view.MenuItem
 import android.view.View
 import android.widget.EditText
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.ActionBarDrawerToggle
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.GravityCompat
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.uiblueprint.android.databinding.ActivityMainBinding
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -51,6 +54,12 @@ class MainActivity : AppCompatActivity(),
     private val chatExecutor = Executors.newSingleThreadExecutor { Thread(it, "GlobalChat-worker") }
     private val projectExecutor = Executors.newSingleThreadExecutor { Thread(it, "NewProject-worker") }
 
+    private val attachPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { _ ->
+        // Global chat attachment not yet supported — picker opened as a stub
+    }
+
     companion object {
         const val STATUS_SAVED = "saved"
         const val STATUS_FAILED = "failed"
@@ -69,8 +78,21 @@ class MainActivity : AppCompatActivity(),
         setupFolderList()
         setupChatList()
 
+        // Wire hamburger and close-drawer buttons
+        binding.btnDrawerToggle.setOnClickListener {
+            if (binding.drawerLayout.isDrawerOpen(GravityCompat.START)) {
+                binding.drawerLayout.closeDrawer(GravityCompat.START)
+            } else {
+                binding.drawerLayout.openDrawer(GravityCompat.START)
+            }
+        }
+        binding.btnCloseDrawer.setOnClickListener {
+            binding.drawerLayout.closeDrawer(GravityCompat.START)
+        }
+
         binding.btnNewProject.setOnClickListener { onNewProjectClicked() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
+        binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
         binding.tvBackendUrl.text = getString(R.string.label_backend_url, BuildConfig.BACKEND_BASE_URL)
 
         // Restore agent mode preference.
@@ -600,4 +622,34 @@ class MainActivity : AppCompatActivity(),
     }
 
     data class FolderItem(val id: String, val status: String, val label: String)
+
+    // -------------------------------------------------------------------------
+    // Attach bottom sheet
+    // -------------------------------------------------------------------------
+
+    private fun showAttachBottomSheet() {
+        val sheet = BottomSheetDialog(this)
+        val view = layoutInflater.inflate(R.layout.bottom_sheet_attach, null)
+        sheet.setContentView(view)
+
+        view.findViewById<android.widget.ImageButton>(R.id.btnAttachGallery).setOnClickListener {
+            sheet.dismiss()
+            attachPickerLauncher.launch("image/*")
+        }
+        view.findViewById<android.widget.ImageButton>(R.id.btnAttachCamera).setOnClickListener {
+            sheet.dismiss()
+            Toast.makeText(this, "Camera coming soon", Toast.LENGTH_SHORT).show()
+        }
+        view.findViewById<android.widget.ImageButton>(R.id.btnAttachDocument).setOnClickListener {
+            sheet.dismiss()
+            attachPickerLauncher.launch("*/*")
+        }
+        view.findViewById<android.widget.ImageButton>(R.id.btnAttachAudio).setOnClickListener {
+            sheet.dismiss()
+            attachPickerLauncher.launch("audio/*")
+        }
+        // Hide video row in MainActivity
+        view.findViewById<android.view.View>(R.id.rowAttach2)?.visibility = android.view.View.GONE
+        sheet.show()
+    }
 }

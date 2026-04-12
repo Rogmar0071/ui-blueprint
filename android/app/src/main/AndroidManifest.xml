@@ -46,6 +46,26 @@
             android:parentActivityName=".MainActivity"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity
+            android:name=".VideoPlayerActivity"
+            android:exported="false"
+            android:parentActivityName=".FolderDetailActivity" />
+
+        <activity
+            android:name=".TextViewerActivity"
+            android:exported="false"
+            android:parentActivityName=".FolderDetailActivity" />
+
+        <activity
+            android:name=".ImageViewerActivity"
+            android:exported="false"
+            android:parentActivityName=".FolderDetailActivity" />
+
+        <activity
+            android:name=".AudioPlayerActivity"
+            android:exported="false"
+            android:parentActivityName=".FolderDetailActivity" />
+
         <!-- Foreground service that runs MediaProjection + MediaRecorder -->
         <service
             android:name=".CaptureService"

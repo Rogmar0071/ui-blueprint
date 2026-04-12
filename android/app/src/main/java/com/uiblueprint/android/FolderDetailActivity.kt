@@ -17,11 +17,16 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.uiblueprint.android.databinding.ActivityFolderDetailBinding
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -80,8 +85,30 @@ class FolderDetailActivity : AppCompatActivity() {
     private var lastRecordingDurationMs: Int? = null
     private var lastGalleryUri: Uri? = null
 
+    /** Last full folder JSON response; used by openLastAnalysisArtifact(). */
+    private var lastFolderJson: JSONObject? = null
+
     /** clip_object_key from the last successful loadFolder() response. */
     private var folderClipObjectKey: String? = null
+
+    // Adapters for expandable sections
+    private val jobAdapter = JobItemAdapter()
+    private val artifactAdapter = ArtifactItemAdapter { artifact ->
+        ArtifactViewerRouter.open(this, JSONObject().apply {
+            put("id", artifact.id)
+            put("type", artifact.type)
+            put("object_key", artifact.objectKey)
+            artifact.url?.let { put("url", it) }
+        }, folderId)
+    }
+    private val supportingDataAdapter = ArtifactItemAdapter { artifact ->
+        ArtifactViewerRouter.open(this, JSONObject().apply {
+            put("id", artifact.id)
+            put("type", artifact.type)
+            put("object_key", artifact.objectKey)
+            artifact.url?.let { put("url", it) }
+        }, folderId)
+    }
 
     // MediaProjection permission launcher.
     private val projectionLauncher = registerForActivityResult(
@@ -103,6 +130,17 @@ class FolderDetailActivity : AppCompatActivity() {
 
     // Gallery video picker launcher.
     private val galleryPickLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            uploadClipFromUri(uri)
+        } else {
+            setActionStatus(null)
+        }
+    }
+
+    // Generic file/document/audio attach launcher.
+    private val folderAttachPickerLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent(),
     ) { uri: Uri? ->
         if (uri != null) {
@@ -153,11 +191,24 @@ class FolderDetailActivity : AppCompatActivity() {
 
         binding.btnRecord.setOnClickListener { onRecordClicked() }
         binding.btnPickGallery.setOnClickListener { onPickGalleryClicked() }
-        binding.btnAnalyze.setOnClickListener { onAnalyzeClicked() }
+        binding.btnAnalyze.setOnClickListener { showAnalyzeBottomSheet() }
         binding.btnSend.setOnClickListener { onSendClicked() }
+        binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
         binding.tvFolderTitle.text = getString(R.string.folder_detail_title)
         binding.tvFolderStatus.text = getString(R.string.folder_loading)
         binding.tvFolderId.text = getString(R.string.label_folder_id, folderId)
+
+        // Set up expandable sections
+        binding.rvJobs.layoutManager = LinearLayoutManager(this)
+        binding.rvJobs.adapter = jobAdapter
+        binding.rvArtifacts.layoutManager = LinearLayoutManager(this)
+        binding.rvArtifacts.adapter = artifactAdapter
+        binding.rvSupportingData.layoutManager = LinearLayoutManager(this)
+        binding.rvSupportingData.adapter = supportingDataAdapter
+
+        toggleSection(binding.headerJobs, binding.rvJobs, binding.ivJobsChevron)
+        toggleSection(binding.headerArtifacts, binding.rvArtifacts, binding.ivArtifactsChevron)
+        toggleSection(binding.headerSupportingData, binding.rvSupportingData, binding.ivSupportingDataChevron)
 
         loadFolder()
         loadMessages()
@@ -729,6 +780,7 @@ class FolderDetailActivity : AppCompatActivity() {
     }
 
     private fun renderFolder(json: JSONObject) {
+        lastFolderJson = json
         val title = json.optString("title", "").trim()
         binding.tvFolderTitle.text = if (title.isNotEmpty()) title else getString(R.string.label_untitled_project)
         binding.tvFolderStatus.text = getString(R.string.label_folder_status, json.optString("status", "?"))
@@ -740,49 +792,64 @@ class FolderDetailActivity : AppCompatActivity() {
             folderClipObjectKey = serverClipKey
         }
 
-        // Jobs (newest-first – backend already returns desc)
+        // Jobs
         val jobs = json.optJSONArray("jobs")
-        binding.tvJobs.text = if (jobs == null || jobs.length() == 0) {
-            getString(R.string.folder_no_jobs)
-        } else {
-            buildString {
-                for (i in 0 until jobs.length()) {
-                    val job = jobs.getJSONObject(i)
-                    appendLine(
-                        "${job.optString("type")}  –  ${job.optString("status")} " +
-                            "(${job.optInt("progress")}%)",
+        val jobList = mutableListOf<JobItem>()
+        if (jobs != null) {
+            for (i in 0 until jobs.length()) {
+                val job = jobs.getJSONObject(i)
+                jobList.add(
+                    JobItem(
+                        id = job.optString("id", i.toString()),
+                        type = job.optString("type", "?"),
+                        status = job.optString("status", "?"),
+                        progress = job.optInt("progress", 0),
+                        createdAt = job.optString("created_at", ""),
                     )
-                }
-            }.trim()
+                )
+            }
         }
+        jobAdapter.submitList(jobList)
+        binding.tvJobsCount.text = "${jobList.size}"
 
-        // Artifacts
+        // Artifacts – split into main and supporting
         val artifacts = json.optJSONArray("artifacts")
-        binding.tvArtifacts.text = if (artifacts == null || artifacts.length() == 0) {
-            getString(R.string.folder_no_artifacts)
-        } else {
-            buildString {
-                for (i in 0 until artifacts.length()) {
-                    val a = artifacts.getJSONObject(i)
-                    appendLine("• ${a.optString("type")}")
+        val mainArtifacts = mutableListOf<ArtifactItem>()
+        val supportingArtifacts = mutableListOf<ArtifactItem>()
+        if (artifacts != null) {
+            for (i in 0 until artifacts.length()) {
+                val a = artifacts.getJSONObject(i)
+                val item = ArtifactItem(
+                    id = a.optString("id", i.toString()),
+                    type = a.optString("type", "?"),
+                    objectKey = a.optString("object_key", ""),
+                    url = a.optString("url", "").takeIf { it.isNotBlank() },
+                )
+                val t = item.type
+                if (t.contains("segment") || t.contains("manifest") ||
+                    t.contains("baseline") || t.contains("supporting")
+                ) {
+                    supportingArtifacts.add(item)
+                } else {
+                    mainArtifacts.add(item)
                 }
-            }.trim()
+            }
         }
+        artifactAdapter.submitList(mainArtifacts)
+        supportingDataAdapter.submitList(supportingArtifacts)
+        binding.tvArtifactsCount.text = "${mainArtifacts.size}"
+        binding.tvSupportingDataCount.text = "${supportingArtifacts.size}"
 
         // Manage Analyze button state and polling based on active analyze jobs.
         val hasActiveJob = hasActiveAnalyzeJob(jobs)
-        if (hasActiveJob) {
-            // hasActiveJob being true guarantees jobs is non-null and contains an active
-            // analyze job. Use the status of the first matching active job to set the
-            // button label. The backend returns jobs in insertion order (oldest first),
-            // so the active job found first is the earliest still-running one.
+        if (hasActiveJob && jobs != null) {
             val activeAnalyzeStatus = (0 until jobs.length())
                 .map { jobs.getJSONObject(it) }
                 .firstOrNull {
                     it.optString("type") in ACTIVE_JOB_TYPES &&
                         it.optString("status") in ACTIVE_JOB_STATUSES
                 }
-                ?.optString("status") ?: "queued" // unreachable: guaranteed by hasActiveJob
+                ?.optString("status") ?: "queued"
             binding.btnAnalyze.isEnabled = false
             binding.btnAnalyze.text = if (activeAnalyzeStatus == "running") {
                 getString(R.string.btn_analyze_running)
@@ -792,7 +859,6 @@ class FolderDetailActivity : AppCompatActivity() {
             startPolling()
         } else {
             stopPolling()
-            // Re-enable Analyze when a clip exists (from this session or a previous upload).
             val hasClip = lastClipPath != null || lastGalleryUri != null || !folderClipObjectKey.isNullOrBlank()
             binding.btnAnalyze.isEnabled = hasClip
             binding.btnAnalyze.text = getString(R.string.btn_analyze)
@@ -909,6 +975,142 @@ class FolderDetailActivity : AppCompatActivity() {
         binding.scrollChat.post {
             binding.scrollChat.fullScroll(View.FOCUS_DOWN)
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Expandable section toggle
+    // -------------------------------------------------------------------------
+
+    private fun toggleSection(header: View, rv: RecyclerView, chevron: ImageView) {
+        header.setOnClickListener {
+            if (rv.visibility == View.VISIBLE) {
+                rv.visibility = View.GONE
+                chevron.rotation = -90f
+            } else {
+                rv.visibility = View.VISIBLE
+                chevron.rotation = 0f
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Analyze bottom sheet
+    // -------------------------------------------------------------------------
+
+    private fun showAnalyzeBottomSheet() {
+        val sheet = BottomSheetDialog(this)
+        val view = layoutInflater.inflate(R.layout.bottom_sheet_analyze, null)
+        sheet.setContentView(view)
+
+        view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnAnalyzeStandard)
+            .setOnClickListener {
+                sheet.dismiss()
+                onAnalyzeClicked()
+            }
+        view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnAnalyzeRerun)
+            .setOnClickListener {
+                sheet.dismiss()
+                enqueueAnalyzeJobForced()
+            }
+        view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnViewLastAnalysis)
+            .setOnClickListener {
+                sheet.dismiss()
+                openLastAnalysisArtifact()
+            }
+        sheet.show()
+    }
+
+    private fun enqueueAnalyzeJobForced() {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        binding.btnAnalyze.isEnabled = false
+        val body = JSONObject().put("type", "analyze").toString()
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId/jobs")
+            .post(body)
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        executor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            loadFolder()
+                            startPolling()
+                        } else {
+                            binding.btnAnalyze.isEnabled = true
+                            Toast.makeText(
+                                this,
+                                "Failed to start analyze: HTTP ${resp.code}",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+            } catch (e: IOException) {
+                runOnUiThread {
+                    binding.btnAnalyze.isEnabled = true
+                    Toast.makeText(this, "Failed to start analyze: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun openLastAnalysisArtifact() {
+        val folderJson = lastFolderJson ?: run {
+            Toast.makeText(this, getString(R.string.toast_no_analysis_yet), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val artifacts = folderJson.optJSONArray("artifacts")
+        if (artifacts == null || artifacts.length() == 0) {
+            Toast.makeText(this, getString(R.string.toast_no_analysis_yet), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val analysisTypes = setOf("analysis_md", "analysis_json")
+        val analysisArtifact = (0 until artifacts.length())
+            .map { artifacts.getJSONObject(it) }
+            .lastOrNull { it.optString("type") in analysisTypes }
+        if (analysisArtifact == null) {
+            Toast.makeText(this, getString(R.string.toast_no_analysis_yet), Toast.LENGTH_SHORT).show()
+            return
+        }
+        ArtifactViewerRouter.open(this, analysisArtifact, folderId)
+    }
+
+    // -------------------------------------------------------------------------
+    // Attach bottom sheet
+    // -------------------------------------------------------------------------
+
+    private fun showAttachBottomSheet() {
+        val sheet = BottomSheetDialog(this)
+        val view = layoutInflater.inflate(R.layout.bottom_sheet_attach, null)
+        sheet.setContentView(view)
+
+        view.findViewById<ImageButton>(R.id.btnAttachGallery).setOnClickListener {
+            sheet.dismiss()
+            galleryPickLauncher.launch("image/*")
+        }
+        view.findViewById<ImageButton>(R.id.btnAttachVideo).setOnClickListener {
+            sheet.dismiss()
+            galleryPickLauncher.launch("video/*")
+        }
+        view.findViewById<ImageButton>(R.id.btnAttachCamera).setOnClickListener {
+            sheet.dismiss()
+            Toast.makeText(this, "Camera coming soon", Toast.LENGTH_SHORT).show()
+        }
+        view.findViewById<ImageButton>(R.id.btnAttachDocument).setOnClickListener {
+            sheet.dismiss()
+            folderAttachPickerLauncher.launch("*/*")
+        }
+        view.findViewById<ImageButton>(R.id.btnAttachAudio).setOnClickListener {
+            sheet.dismiss()
+            folderAttachPickerLauncher.launch("audio/*")
+        }
+        // Show video row in FolderDetailActivity
+        view.findViewById<View>(R.id.rowAttach2)?.visibility = View.VISIBLE
+        sheet.show()
     }
 
     companion object {

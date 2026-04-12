@@ -12,4 +12,10 @@
     <color name="divider">#33FFFFFF</color>
     <color name="icon_tint">#FFFFFF</color>
     <color name="selected_overlay">#33FFFFFF</color>
+    <!-- Job status badge colours -->
+    <color name="status_queued">#FFC107</color>
+    <color name="status_running">#2196F3</color>
+    <color name="status_succeeded">#4CAF50</color>
+    <color name="status_failed">#F44336</color>
+    <color name="status_unknown">#9E9E9E</color>
 </resources>
