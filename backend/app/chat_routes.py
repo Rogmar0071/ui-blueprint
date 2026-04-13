@@ -8,10 +8,13 @@ Endpoints
 GET  /api/chat                               list persisted chat history (newest-first)
 POST /api/chat                               send a message and persist it
 POST /api/chat/{message_id}/edit             create an edited user message (supersedes original)
+POST /api/chat/intent                        INTERACTION_LAYER_V2 — parse raw human input into
+                                             a deterministic structured intent JSON (never executes)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -83,6 +86,95 @@ _OPS_CONTEXT_HEADER = (
     "{snippet}\n"
     "--- End of system activity ---"
 )
+
+# ---------------------------------------------------------------------------
+# INTERACTION_LAYER_V2 — system prompt and schema version
+# ---------------------------------------------------------------------------
+
+INTERACTION_LAYER_V2_SCHEMA_VERSION = "2"
+
+_INTERACTION_LAYER_V2_SYSTEM_PROMPT = """\
+You are INTERACTION_LAYER_V2 — a strict, deterministic intent parser.
+
+ROLE: Convert raw human input into a structured JSON specification.
+AUTHORITY: Analysis and specification ONLY. You NEVER execute code changes.
+           You NEVER treat your output as execution authority.
+
+OUTPUT RULES:
+- Respond with valid JSON only. No markdown. No prose. No explanation outside JSON.
+- The JSON must conform exactly to the schema below.
+- Do NOT invent file names, component names, or system structure that is not
+  explicitly provided in the repo context. If unknown, use null or empty arrays.
+
+OPERATING MODES:
+  Mode A — No repo context provided:
+    - Set "mode": "A"
+    - Set "repoContextProvided": false
+    - Set "impactAnalysis.requiresRepoContext": true
+    - Set "changePlan.canExecuteDeterministically": false
+    - Set "changePlan.requiresStructuralMapping": true
+    - Set "changePlan.steps": []
+    - Set "changePlan.blockedReason": "Repo context required for deterministic execution"
+
+  Mode B — Repo/system context is provided:
+    - Set "mode": "B"
+    - Set "repoContextProvided": true
+    - Populate "structuralIntent" using only the known context (no hallucination)
+    - Populate "changePlan.steps" only when the target files/components are explicitly known
+    - Set "changePlan.canExecuteDeterministically": true ONLY when ALL of the following hold:
+        * repo context is present
+        * uncertainty level is low
+        * all dependencies are explicitly defined
+        * no structural mapping is required
+      Otherwise keep it false.
+
+DETERMINISM GATE (MANDATORY):
+  "changePlan.canExecuteDeterministically" MUST be false if ANY of:
+    - repoContextProvided is false
+    - uncertainties list is non-empty
+    - changePlan.requiresStructuralMapping is true
+    - affected components are unknown
+
+NO HALLUCINATION RULE:
+  If files or components are not explicitly known from the provided context:
+    - Do NOT invent paths or component names
+    - Set "changePlan.requiresStructuralMapping": true
+
+REQUIRED JSON SCHEMA:
+{
+  "schemaVersion": "2",
+  "intentId": "<uuid-v4>",
+  "mode": "A" | "B",
+  "repoContextProvided": true | false,
+  "intent": {
+    "objective": "<one-sentence summary of what the user wants>",
+    "interpretedMeaning": "<deeper interpretation including implicit goals>"
+  },
+  "structuralIntent": {
+    "operationType": "create" | "modify" | "delete" | "query" | "unknown",
+    "targetLayer": "ui" | "backend" | "domain" | "system" | "unknown",
+    "scope": "<brief description of the structural scope>"
+  },
+  "impactAnalysis": {
+    "affectedComponents": ["<component or file name>"],
+    "riskLevel": "low" | "medium" | "high" | "unknown",
+    "requiresRepoContext": true | false,
+    "uncertainties": ["<uncertainty description>"]
+  },
+  "changePlan": {
+    "canExecuteDeterministically": true | false,
+    "requiresStructuralMapping": true | false,
+    "steps": [
+      {
+        "stepId": "<short identifier>",
+        "description": "<what this step does>",
+        "targetFile": "<file path or null if unknown>"
+      }
+    ],
+    "blockedReason": "<reason execution is blocked, or null if not blocked>"
+  }
+}
+"""
 
 # Keywords that indicate the user wants up-to-date / current information.
 _RECENCY_PATTERN = re.compile(
@@ -170,6 +262,92 @@ class ChatEditResponse(BaseModel):
     schema_version: str = SCHEMA_VERSION
     original_message: ChatMessageResponse
     new_message: ChatMessageResponse
+
+
+# ---------------------------------------------------------------------------
+# INTERACTION_LAYER_V2 — Schemas
+# ---------------------------------------------------------------------------
+
+
+class IntentV2RepoContext(BaseModel):
+    """Optional repo/system context provided by the caller for Mode B."""
+
+    model_config = ConfigDict(extra="allow")
+
+    files: list[str] = Field(default_factory=list)
+    components: list[str] = Field(default_factory=list)
+    description: str | None = None
+
+
+class IntentV2Request(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    repo_context: IntentV2RepoContext | None = None
+
+    @field_validator("message")
+    @classmethod
+    def _validate_message(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("message is required and must not be empty.")
+        return text
+
+
+class _IntentField(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    objective: str
+    interpretedMeaning: str
+
+
+class _StructuralIntent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    operationType: Literal["create", "modify", "delete", "query", "unknown"]
+    targetLayer: Literal["ui", "backend", "domain", "system", "unknown"]
+    scope: str
+
+
+class _ImpactAnalysis(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    affectedComponents: list[str] = Field(default_factory=list)
+    riskLevel: Literal["low", "medium", "high", "unknown"]
+    requiresRepoContext: bool
+    uncertainties: list[str] = Field(default_factory=list)
+
+
+class _ChangePlanStep(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    stepId: str
+    description: str
+    targetFile: str | None = None
+
+
+class _ChangePlan(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    canExecuteDeterministically: bool
+    requiresStructuralMapping: bool
+    steps: list[_ChangePlanStep] = Field(default_factory=list)
+    blockedReason: str | None = None
+
+
+class IntentV2Response(BaseModel):
+    """Validated INTERACTION_LAYER_V2 response. Never execution authority."""
+
+    model_config = ConfigDict(extra="allow")
+
+    schemaVersion: str = INTERACTION_LAYER_V2_SCHEMA_VERSION
+    intentId: str
+    mode: Literal["A", "B"]
+    repoContextProvided: bool
+    intent: _IntentField
+    structuralIntent: _StructuralIntent
+    impactAnalysis: _ImpactAnalysis
+    changePlan: _ChangePlan
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +581,151 @@ def _build_retrieval_system_prompt(db, search_results: list[dict[str, Any]]) -> 
         "Cite sources by their URL when referencing retrieved facts."
     )
     return base + retrieval_section
+
+
+# ---------------------------------------------------------------------------
+# INTERACTION_LAYER_V2 helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_intent_v2_mode_a_default(message: str) -> dict[str, Any]:
+    """
+    Return a Mode A (no repo context) IntentV2 dict without calling OpenAI.
+
+    Used when OPENAI_API_KEY is not set.  The intent fields are derived from
+    the raw message text — no structural translation is possible.
+    """
+    return {
+        "schemaVersion": INTERACTION_LAYER_V2_SCHEMA_VERSION,
+        "intentId": str(uuid.uuid4()),
+        "mode": "A",
+        "repoContextProvided": False,
+        "intent": {
+            "objective": message[:200],
+            "interpretedMeaning": f"User wants to: {message[:180]}",
+        },
+        "structuralIntent": {
+            "operationType": "unknown",
+            "targetLayer": "unknown",
+            "scope": "unknown — repo context required",
+        },
+        "impactAnalysis": {
+            "affectedComponents": [],
+            "riskLevel": "unknown",
+            "requiresRepoContext": True,
+            "uncertainties": ["No repo context provided; cannot determine impact"],
+        },
+        "changePlan": {
+            "canExecuteDeterministically": False,
+            "requiresStructuralMapping": True,
+            "steps": [],
+            "blockedReason": "Repo context required for deterministic execution",
+        },
+    }
+
+
+def _call_openai_intent_v2(
+    message: str,
+    repo_context: IntentV2RepoContext | None,
+    api_key: str,
+) -> dict[str, Any]:
+    """
+    Call OpenAI with the INTERACTION_LAYER_V2 system prompt and return the
+    parsed JSON dict.  Never raises — on any error returns a Mode A fallback.
+
+    This function is analysis + specification only.  It NEVER executes changes.
+    """
+    model = os.environ.get("OPENAI_MODEL_CHAT", _DEFAULT_MODEL_CHAT)
+    base_url = os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL)
+    timeout = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT)))
+    url = _build_completions_url(base_url)
+
+    # Build user message — include serialised repo context when present.
+    if repo_context is not None:
+        context_json = repo_context.model_dump(mode="json", exclude_none=True)
+        user_content = (
+            f"USER INPUT: {message}\n\n"
+            f"REPO CONTEXT (Mode B):\n{json.dumps(context_json, indent=2)}"
+        )
+    else:
+        user_content = f"USER INPUT: {message}\n\nREPO CONTEXT: none (Mode A)"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _INTERACTION_LAYER_V2_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 800,
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as http:
+            response = http.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+        response.raise_for_status()
+        data = response.json()
+        raw_text = data["choices"][0]["message"]["content"].strip()
+
+        # Strip markdown code fences if the model added them despite instructions.
+        # Only strip the opening and closing fence lines (```json / ```), not any
+        # internal content that might happen to start with backticks.
+        if raw_text.startswith("```"):
+            lines = raw_text.splitlines()
+            # Remove the first line (opening fence) and the last line if it is a
+            # closing fence; leave all other lines untouched.
+            if lines and lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw_text = "\n".join(lines).strip()
+
+        parsed: dict[str, Any] = json.loads(raw_text)
+        # Enforce schemaVersion — always authoritative from our constant.
+        parsed["schemaVersion"] = INTERACTION_LAYER_V2_SCHEMA_VERSION
+        return parsed
+
+    except Exception as exc:
+        logger.warning("INTERACTION_LAYER_V2 OpenAI call failed: %s", exc)
+        fallback = _build_intent_v2_mode_a_default(message)
+        fallback["_error"] = str(exc)[:200]
+        return fallback
+
+
+def _validate_intent_v2(raw: dict[str, Any]) -> IntentV2Response:
+    """
+    Validate raw parsed dict against IntentV2Response schema.
+
+    Applies determinism gate: forces canExecuteDeterministically=false when
+    the mode, context flags, or uncertainties require it.
+    """
+    # Determinism gate — enforce the rules regardless of what the LLM said.
+    change_plan = raw.get("changePlan", {})
+    impact = raw.get("impactAnalysis", {})
+
+    repo_context_provided = raw.get("repoContextProvided", False)
+    uncertainties = impact.get("uncertainties", [])
+    requires_structural_mapping = change_plan.get("requiresStructuralMapping", False)
+
+    must_block = (
+        not repo_context_provided
+        or bool(uncertainties)
+        or requires_structural_mapping
+        or not impact.get("affectedComponents")
+    )
+
+    if must_block:
+        change_plan["canExecuteDeterministically"] = False
+        raw["changePlan"] = change_plan
+
+    return IntentV2Response.model_validate(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -654,3 +977,90 @@ def edit_chat_message(message_id: str, body: dict[str, Any]) -> JSONResponse:
         )
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/chat/intent  — INTERACTION_LAYER_V2
+# ---------------------------------------------------------------------------
+
+
+@router.post("/chat/intent", status_code=200, dependencies=[Depends(require_auth)])
+async def parse_intent_v2(body: dict[str, Any]) -> JSONResponse:
+    """
+    INTERACTION_LAYER_V2 — Convert raw human input into a deterministic
+    structured intent specification (JSON only, never executes).
+
+    Operating modes
+    ---------------
+    Mode A (no ``repo_context``):
+        Returns intent with ``canExecuteDeterministically=false`` and marks
+        repo context as required.  Structural translation is skipped.
+
+    Mode B (``repo_context`` provided):
+        Attempts structural translation and change planning using only the
+        explicitly supplied context.  Files/components are never hallucinated.
+
+    The response is SPECIFICATION ONLY.  The system does not execute, mutate,
+    or treat this output as execution authority.
+
+    Request body::
+
+        {
+          "message": "Add a dark-mode toggle to the settings screen",
+          "repo_context": {           // optional — omit for Mode A
+            "files": ["src/Settings.tsx", "src/theme.ts"],
+            "components": ["SettingsScreen", "ThemeProvider"],
+            "description": "React Native app with styled-components"
+          }
+        }
+
+    Response (HTTP 200)::
+
+        {
+          "schemaVersion": "2",
+          "intentId": "<uuid-v4>",
+          "mode": "A" | "B",
+          "repoContextProvided": true | false,
+          "intent": { "objective": "...", "interpretedMeaning": "..." },
+          "structuralIntent": { "operationType": "...", "targetLayer": "...", "scope": "..." },
+          "impactAnalysis": { "affectedComponents": [], "riskLevel": "...",
+                              "requiresRepoContext": true|false, "uncertainties": [] },
+          "changePlan": { "canExecuteDeterministically": false, "requiresStructuralMapping": true,
+                          "steps": [], "blockedReason": "..." }
+        }
+    """
+    try:
+        request = IntentV2Request.model_validate(body or {})
+    except ValidationError as exc:
+        if any(error["loc"] == ("message",) for error in exc.errors()):
+            return _error(
+                400,
+                "invalid_request",
+                "message is required and must not be empty.",
+            )
+        return _error(
+            422,
+            "invalid_request",
+            "Request body failed validation.",
+            {"errors": exc.errors()},
+        )
+
+    message = request.message
+    repo_context = request.repo_context
+
+    openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+
+    if not openai_api_key:
+        # Mode A — no OpenAI key; return deterministic defaults.
+        raw = _build_intent_v2_mode_a_default(message)
+    else:
+        raw = _call_openai_intent_v2(message, repo_context, openai_api_key)
+
+    try:
+        validated = _validate_intent_v2(raw)
+        return JSONResponse(status_code=200, content=validated.model_dump(mode="json"))
+    except Exception as exc:
+        logger.warning("IntentV2 validation failed: %s — returning raw fallback", exc)
+        # Fallback: return the raw dict with a validation_error note.
+        raw["_validation_error"] = str(exc)[:200]
+        return JSONResponse(status_code=200, content=raw)
