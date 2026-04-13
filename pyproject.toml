@@ -17,6 +17,9 @@ dependencies = [
 video = [
     "imageio[ffmpeg]>=2.37.3",
 ]
+cv = [
+    "opencv-python>=4.8",
+]
 dev = [
     "imageio[ffmpeg]>=2.37.3",
     "jsonschema>=4.20",
