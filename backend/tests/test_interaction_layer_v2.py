@@ -248,7 +248,18 @@ class TestModeA:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         msg = "Build a login form with email and password"
         body = _post_intent(client, msg)
-        assert msg in body["intent"]["objective"] or msg in body["intent"]["interpretedMeaning"]
+        # At least one of the intent fields must contain the original message text.
+        objective = body["intent"]["objective"]
+        interpreted = body["intent"]["interpretedMeaning"]
+        assert (
+            msg in objective or msg in interpreted
+        ), (
+            f"Message not found in intent fields: "
+            f"objective={objective!r}, interpretedMeaning={interpreted!r}"
+        )
+        # Both fields must be non-empty strings (not just copies of each other).
+        assert len(objective) > 0
+        assert len(interpreted) > 0
 
     def test_mode_a_with_openai_key_but_repo_context_absent(self, client, monkeypatch):
         """When repo_context is omitted, mode must be A even if OpenAI key is set."""

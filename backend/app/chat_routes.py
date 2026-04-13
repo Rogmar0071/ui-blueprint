@@ -602,7 +602,7 @@ def _build_intent_v2_mode_a_default(message: str) -> dict[str, Any]:
         "repoContextProvided": False,
         "intent": {
             "objective": message[:200],
-            "interpretedMeaning": message[:200],
+            "interpretedMeaning": f"User wants to: {message[:180]}",
         },
         "structuralIntent": {
             "operationType": "unknown",
@@ -675,11 +675,17 @@ def _call_openai_intent_v2(
         raw_text = data["choices"][0]["message"]["content"].strip()
 
         # Strip markdown code fences if the model added them despite instructions.
+        # Only strip the opening and closing fence lines (```json / ```), not any
+        # internal content that might happen to start with backticks.
         if raw_text.startswith("```"):
             lines = raw_text.splitlines()
-            raw_text = "\n".join(
-                line for line in lines if not line.strip().startswith("```")
-            ).strip()
+            # Remove the first line (opening fence) and the last line if it is a
+            # closing fence; leave all other lines untouched.
+            if lines and lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw_text = "\n".join(lines).strip()
 
         parsed: dict[str, Any] = json.loads(raw_text)
         # Enforce schemaVersion — always authoritative from our constant.
