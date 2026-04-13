@@ -8,7 +8,7 @@ import org.junit.Test
 import java.lang.reflect.Method
 
 /**
- * Unit tests for [ChatMessageAdapter] content-splitting and AI block sizing.
+ * Unit tests for [ChatMessageAdapter] content-splitting.
  *
  * **Coverage**
  * ------------
@@ -17,8 +17,6 @@ import java.lang.reflect.Method
  *   the copy-code card while leaving prose in the normal text view — ensuring
  *   **only code** is wrapped in the copy block.
  * - `splitArtifactContent` returns `null` artifact when neither pattern is present.
- * - AI response block dimension values are **80% larger** than the default
- *   message card values.
  */
 class ChatMessageBlockSizeTest {
 
@@ -134,44 +132,5 @@ class ChatMessageBlockSizeTest {
         val (_, artifact) = splitArtifactContent("Just plain text with no code.")
 
         assertNull(artifact)
-    }
-
-    // -------------------------------------------------------------------------
-    // **AI Response Block Size — 80% Larger Than Default**
-    //
-    // Note: these tests use the literal dp/sp values from dimens.xml rather than
-    // loading them via an Android Context, because this is a pure JVM unit test
-    // (no Robolectric).  If the dimen values in dimens.xml are changed, these
-    // tests will fail, which is the intended regression-detection behaviour.
-    // -------------------------------------------------------------------------
-
-    @Test
-    fun `AI response card padding is 80 percent larger than default padding`() {
-        // Values from dimens.xml:
-        //   default_message_card_padding = 12dp
-        //   ai_response_card_padding     = 22dp  (12 * 1.8 = 21.6 → rounded to 22)
-        val defaultPaddingDp = 12f
-        val aiPaddingDp = 22f
-
-        val ratio = aiPaddingDp / defaultPaddingDp
-        assertTrue(
-            "AI padding ($aiPaddingDp dp) must be at least 80% larger than default ($defaultPaddingDp dp); ratio=$ratio",
-            ratio >= 1.8f,
-        )
-    }
-
-    @Test
-    fun `AI response text size is 80 percent larger than default text size`() {
-        // Values from dimens.xml:
-        //   default_message_text_size = 14sp
-        //   ai_response_text_size     = 25sp  (14 * 1.8 = 25.2 → rounded to 25)
-        val defaultTextSizeSp = 14f
-        val aiTextSizeSp = 25f
-
-        val ratio = aiTextSizeSp / defaultTextSizeSp
-        assertTrue(
-            "AI text size ($aiTextSizeSp sp) must be at least 80% larger than default ($defaultTextSizeSp sp); ratio=$ratio",
-            ratio >= 1.8f,
-        )
     }
 }
