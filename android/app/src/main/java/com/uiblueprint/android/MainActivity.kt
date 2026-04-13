@@ -1,11 +1,15 @@
 package com.uiblueprint.android
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.view.MenuItem
 import android.view.View
 import android.widget.EditText
@@ -60,6 +64,36 @@ class MainActivity : AppCompatActivity(),
         // Global chat attachment not yet supported — picker opened as a stub
     }
 
+    private val speechInputLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val matches = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            if (!matches.isNullOrEmpty()) {
+                val current = binding.etMessage.text.toString()
+                binding.etMessage.setText(
+                    if (current.isBlank()) matches[0] else "$current ${matches[0]}"
+                )
+                binding.etMessage.setSelection(binding.etMessage.text.length)
+            }
+        }
+    }
+
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            startSpeechRecognition()
+        } else {
+            Toast.makeText(
+                this,
+                getString(R.string.toast_mic_permission_denied),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
     companion object {
         const val STATUS_SAVED = "saved"
         const val STATUS_FAILED = "failed"
@@ -93,6 +127,7 @@ class MainActivity : AppCompatActivity(),
         binding.btnNewProject.setOnClickListener { onNewProjectClicked() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
+        setupMicButton()
         binding.tvBackendUrl.text = getString(R.string.label_backend_url, BuildConfig.BACKEND_BASE_URL)
 
         // Restore agent mode preference.
@@ -623,6 +658,36 @@ class MainActivity : AppCompatActivity(),
     }
 
     data class FolderItem(val id: String, val status: String, val label: String)
+
+    // -------------------------------------------------------------------------
+    // Voice / microphone input
+    // -------------------------------------------------------------------------
+
+    private fun setupMicButton() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            binding.btnMic.isEnabled = false
+            return
+        }
+        binding.btnMic.setOnClickListener { onMicClicked() }
+    }
+
+    private fun onMicClicked() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startSpeechRecognition()
+        } else {
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startSpeechRecognition() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.btn_mic))
+        }
+        speechInputLauncher.launch(intent)
+    }
 
     // -------------------------------------------------------------------------
     // Attach bottom sheet

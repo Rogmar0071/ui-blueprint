@@ -14,6 +14,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -189,6 +191,38 @@ class FolderDetailActivity : AppCompatActivity() {
         }
     }
 
+    // Speech input launcher for btnMic voice-to-text.
+    private val speechInputLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val matches = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            if (!matches.isNullOrEmpty()) {
+                val current = binding.etMessage.text.toString()
+                binding.etMessage.setText(
+                    if (current.isBlank()) matches[0] else "$current ${matches[0]}"
+                )
+                binding.etMessage.setSelection(binding.etMessage.text.length)
+            }
+        }
+    }
+
+    // RECORD_AUDIO permission launcher for voice input (btnMic).
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            startSpeechRecognition()
+        } else {
+            Toast.makeText(
+                this,
+                getString(R.string.toast_mic_permission_denied),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
     // Gallery video picker launcher.
     private val galleryPickLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent(),
@@ -293,6 +327,7 @@ class FolderDetailActivity : AppCompatActivity() {
         binding.btnRecordAudio20s.setOnClickListener { onRecordAudioClicked() }
         binding.btnSend.setOnClickListener { onSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
+        setupMicButton()
         if (initialTitle.isNullOrBlank()) {
             binding.tvFolderTitle.text = getString(R.string.folder_detail_title)
         }
@@ -1495,6 +1530,36 @@ class FolderDetailActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Voice / microphone input
+    // -------------------------------------------------------------------------
+
+    private fun setupMicButton() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            binding.btnMic.isEnabled = false
+            return
+        }
+        binding.btnMic.setOnClickListener { onMicClicked() }
+    }
+
+    private fun onMicClicked() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startSpeechRecognition()
+        } else {
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startSpeechRecognition() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.btn_mic))
+        }
+        speechInputLauncher.launch(intent)
     }
 
     companion object {

@@ -81,6 +81,8 @@
     <string name="btn_attach">Attach</string>
     <string name="btn_mic">Voice input</string>
     <string name="btn_voice_send">Send voice</string>
+    <string name="toast_mic_not_supported">Voice input is not supported on this device</string>
+    <string name="toast_mic_permission_denied">Microphone permission is required for voice input</string>
     <string name="btn_thumb_up">Helpful</string>
     <string name="btn_thumb_down">Not helpful</string>
     <string name="hint_reply_folder">Message…</string>
