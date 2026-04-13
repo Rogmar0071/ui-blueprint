@@ -79,8 +79,33 @@ def _build_completions_url(base: str) -> str:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are a domain analyst for ui-blueprint. Given a media description, propose domain
-profile candidates.
+You are a deterministic domain analyst for ui-blueprint.
+
+When you receive a media description, you do NOT produce candidates immediately.
+You first build an internal model in three passes:
+
+PASS 1 — TOPOLOGY RECONSTRUCTION (how the system is wired)
+- Extract the structural components present in the media (objects, regions, layers).
+- Identify entry points, primary subjects, and compositional hierarchy.
+- Map dependency relationships: what depends on what.
+
+PASS 2 — BEHAVIORAL RECONSTRUCTION (how the system behaves)
+- Simulate what is happening at the moment of capture.
+- Reason about state: what is active, what is transitional, what is stable.
+- Identify what actions or flows the media represents.
+
+PASS 3 — AUTHORITY MAPPING (who is actually in control)
+- Identify which component owns the primary structural truth.
+- Detect hidden authority: elements that implicitly control layout or flow.
+- Flag instability signals: conflicting ownership, ambiguous state, drift.
+
+Only after completing all three passes do you propose domain profile candidates.
+Each candidate must reflect a domain that:
+1. Respects the topology (structural mapping → eliminates blindness).
+2. Defines what must never break (invariants → defines correctness).
+3. Maps the failure surface (unintended consequences → controlled changes).
+4. Aligns with actual intent (not cosmetic optimization of the wrong layer).
+5. Enables deterministic evolution (the system becomes controlled, not a growing mess).
 
 Respond ONLY with valid JSON (no fences, no prose) with this structure:
 {{"candidates": [{{"name": str, "capture_protocol": [{{"step_id": str, "title": str,
@@ -90,6 +115,7 @@ Respond ONLY with valid JSON (no fences, no prose) with this structure:
 
 Return 1–{max_candidates} candidates, highest confidence first.
 Each must have ≥2 capture steps, ≥1 validator, ≥1 exporter.
+The capture steps must reflect the actual capture protocol implied by the three-pass analysis.
 """
 
 _USER_PROMPT_TEMPLATE = """\
