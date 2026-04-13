@@ -2179,8 +2179,22 @@ def _analysis_to_blueprint_md(data: dict) -> str:
 # analyze_repo job — structural analysis of a repository ZIP
 # ---------------------------------------------------------------------------
 
+# DEPRECATED: kept for backward compatibility with existing references/tests.
 MAX_REPO_CHARS = int(os.environ.get("ANALYZE_REPO_MAX_CHARS", 60_000))
 
+# New batch size for the multi-pass pipeline.
+# Falls back to ANALYZE_REPO_MAX_CHARS if ANALYZE_REPO_BATCH_CHARS is not set,
+# otherwise defaults to 80 000.
+ANALYZE_REPO_BATCH_CHARS = int(
+    os.environ.get(
+        "ANALYZE_REPO_BATCH_CHARS",
+        os.environ.get("ANALYZE_REPO_MAX_CHARS", 80_000),
+    )
+)
+
+MAX_REPO_ZIP_BYTES = int(os.environ.get("MAX_REPO_ZIP_BYTES", 200 * 1024 * 1024))  # 200 MB
+
+# DEPRECATED: kept for backward compatibility with existing references/tests.
 _REPO_ANALYSIS_SYSTEM_PROMPT = """\
 You are a structural analysis engine. Given a source repository, produce a detailed \
 Structural Map in Markdown covering:
@@ -2202,6 +2216,47 @@ Structural Map in Markdown covering:
 (State what intent is needed to proceed with controlled change design.)
 Be precise, file-level, and deterministic. No vague suggestions."""
 
+_REPO_BATCH_SYSTEM_PROMPT = """\
+You are a structural analysis engine performing a partial pass over a repository.
+Analyse the files provided and extract:
+1. Entry points and bootstrapping logic found in these files
+2. UI components and their mounting/composition relationships
+3. State ownership: which components/modules own state
+4. Side effects and event flows visible in these files
+5. Dependencies between these files and other modules (even if not in this batch)
+6. Any invariants or constraints that must never break
+7. Any instability signals (hidden authority, ambiguous ownership, drift)
+
+Be file-level precise. Output Markdown. Label each section with the file paths involved.
+Do not speculate beyond what the code shows. Mark unknowns explicitly."""
+
+_REPO_AGGREGATE_SYSTEM_PROMPT = """\
+You are a structural analysis engine. You have received partial analyses of a repository
+broken into batches. Synthesise them into a complete Structural Map covering:
+
+## Phase 1 — Structural Surface Mapping
+### A. Entry Points
+### B. UI Composition Tree
+### C. State Architecture
+### D. Event Flow
+### E. Domain Boundary
+
+## Phase 2 — Invariant Detection
+### A. UI Invariants
+### B. State Invariants
+### C. System Invariants
+
+## Phase 3 — Failure Surface Map
+### Safe Zones
+### Sensitive Zones
+### Critical Spine Components
+
+## Phases 4–7 — Awaiting Intent
+(State what intent is needed to proceed with controlled change design.)
+
+Be precise, file-level, and deterministic. Resolve any contradictions between batches
+by marking them explicitly. No vague suggestions."""
+
 
 def run_analyze_repo_step(job_id: str) -> None:
     """
@@ -2210,12 +2265,13 @@ def run_analyze_repo_step(job_id: str) -> None:
     Pipeline:
     1. Load job + folder from DB.
     2. Download repo.zip from R2 to a temp file.
-    3. Extract the ZIP and build a file tree (path + size, skip binary files).
-    4. Read text content of files up to a total token budget (~60 000 chars).
-    5. Call OpenAI with a system prompt that performs the 7-phase structural analysis.
-    6. Save the Markdown report as artifact type 'repo_analysis_md'.
-    7. Save a compact JSON summary (file tree + phase 1 map) as 'repo_structure_json'.
-    8. Mark job succeeded, progress=100.
+    3. Extract the ZIP and build a full file tree (path + size, skip binary files).
+    4. Priority-sort files by architectural importance.
+    5. Process files in batches of ANALYZE_REPO_BATCH_CHARS, calling OpenAI per batch.
+    6. Aggregation call: synthesise all partial analyses into a final Markdown report.
+    7. Save the Markdown report as artifact type 'repo_analysis_md'.
+    8. Save a compact JSON summary (file tree + batch count) as 'repo_structure_json'.
+    9. Mark job succeeded, progress=100.
     """
     import json
     import zipfile
@@ -2276,9 +2332,9 @@ def run_analyze_repo_step(job_id: str) -> None:
             if not found:
                 raise RuntimeError(f"repo.zip not found in storage: {repo_key}")
 
-            _update_job(job_id, progress=20)
+            _update_job(job_id, progress=10)
 
-            # Extract ZIP and build file tree.
+            # Extract ZIP and build full file tree (no entry cap).
             file_tree: list[dict] = []
             text_files: list[tuple[int, str, str]] = []  # (size, path, content)
 
@@ -2318,10 +2374,56 @@ def run_analyze_repo_step(job_id: str) -> None:
                         except Exception:  # noqa: BLE001
                             logger.debug("Skipping file %s: could not decode", rel_path)
 
-            _update_job(job_id, progress=35)
+            _update_job(job_id, progress=20)
 
-            # Read text content up to MAX_REPO_CHARS, smallest files first.
-            text_files.sort(key=lambda t: t[0])
+            # Priority-sort files by architectural importance (not just size).
+            def _file_priority(path: str) -> int:
+                filename = os.path.basename(path).lower()
+                path_lower = path.replace("\\", "/").lower()
+
+                # Detect test files early so the final return can be a single expression.
+                _TEST_KEYWORDS = ("test/", "tests/", "__tests__/")
+                is_test = (
+                    any(kw in path_lower for kw in _TEST_KEYWORDS)
+                    or filename.startswith("test_")
+                )
+
+                # Priority 1: Entry points
+                _ENTRY_POINTS = {
+                    "main.py", "__main__.py", "app.kt", "mainactivity.kt",
+                    "index.js", "index.ts", "app.py", "server.py", "manage.py", "settings.py",
+                }
+                if filename in _ENTRY_POINTS:
+                    return 1
+
+                # Priority 2: Domain / business logic
+                _DOMAIN_KEYWORDS = (
+                    "domain/", "service/", "services/", "core/", "usecase/", "usecases/",
+                )
+                if any(kw in path_lower for kw in _DOMAIN_KEYWORDS):
+                    return 2
+
+                # Priority 3: Routes / API layer
+                _ROUTE_KEYWORDS = (
+                    "routes/", "api/", "handler/", "handlers/",
+                    "controller/", "controllers/", "endpoint/", "endpoints/",
+                )
+                if any(kw in path_lower for kw in _ROUTE_KEYWORDS):
+                    return 3
+
+                # Priority 4: Models / data
+                _MODEL_KEYWORDS = (
+                    "model/", "models/", "schema/", "schemas/", "entity/", "entities/",
+                )
+                if any(kw in path_lower for kw in _MODEL_KEYWORDS):
+                    return 4
+
+                # Priority 5: Everything else; Priority 6 (lowest): test files
+                return 6 if is_test else 5
+
+            # Sort by (priority, size_ascending) so important files come first.
+            text_files.sort(key=lambda t: (_file_priority(t[1]), t[0]))
+
             _EXT_TO_LANG: dict[str, str] = {
                 ".py": "python", ".kt": "kotlin", ".java": "java", ".js": "javascript",
                 ".ts": "typescript", ".tsx": "typescript", ".jsx": "javascript",
@@ -2331,35 +2433,48 @@ def run_analyze_repo_step(job_id: str) -> None:
                 ".toml": "toml", ".md": "markdown", ".html": "html", ".css": "css",
                 ".sql": "sql", ".gradle": "groovy",
             }
-            accumulated = 0
-            content_sections: list[str] = []
-            for _size, path, text in text_files:
-                remaining = MAX_REPO_CHARS - accumulated
-                if remaining <= 0:
-                    break
-                chunk = text[:remaining]
-                lang = _EXT_TO_LANG.get(os.path.splitext(path)[1].lower(), "")
-                content_sections.append(f"### File: {path}\n```{lang}\n{chunk}\n```")
-                accumulated += len(chunk)
 
-            content_block = (
-                "\n\n".join(content_sections) if content_sections else "(No text files found)"
-            )
+            # Build full file tree summary for the aggregation message (no cap).
+            tree_lines = [f"- {f['path']} ({f['size']} bytes)" for f in file_tree]
+            tree_summary = "\n".join(tree_lines) if tree_lines else "(empty repository)"
 
-            # Build file tree summary for the user message.
-            tree_lines = [f"- {f['path']} ({f['size']} bytes)" for f in file_tree[:200]]
-            if len(file_tree) > 200:
-                tree_lines.append(f"… and {len(file_tree) - 200} more files")
-            tree_summary = "\n".join(tree_lines)
+            # Build batches of ANALYZE_REPO_BATCH_CHARS — no file is ever dropped.
+            batches: list[list[tuple[int, str, str]]] = []
+            current_batch: list[tuple[int, str, str]] = []
+            current_chars = 0
 
-            user_message = (
-                f"## Repository File Tree\n\n{tree_summary}\n\n"
-                f"## File Contents (up to {MAX_REPO_CHARS} chars)\n\n{content_block}"
-            )
+            for size, path, text in text_files:
+                total_chars = len(text)
+                if total_chars > ANALYZE_REPO_BATCH_CHARS:
+                    # Single file exceeds batch size — flush current batch first, then
+                    # include the oversized file alone with a truncation annotation.
+                    if current_batch:
+                        batches.append(current_batch)
+                        current_batch = []
+                        current_chars = 0
+                    shown = ANALYZE_REPO_BATCH_CHARS
+                    truncated = (
+                        text[:shown]
+                        + f"\n# [TRUNCATED: showing {shown} of {total_chars} chars]"
+                    )
+                    batches.append([(size, path, truncated)])
+                elif current_chars + total_chars > ANALYZE_REPO_BATCH_CHARS:
+                    # Current batch is full — flush and start a new one with this file.
+                    if current_batch:
+                        batches.append(current_batch)
+                    current_batch = [(size, path, text)]
+                    current_chars = total_chars
+                else:
+                    current_batch.append((size, path, text))
+                    current_chars += total_chars
 
-            _update_job(job_id, progress=50)
+            if current_batch:
+                batches.append(current_batch)
 
-            # Call OpenAI.
+            if not batches:
+                batches = [[]]  # At least one (empty) batch so we always call OpenAI.
+
+            # OpenAI connection settings.
             openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
             if not openai_api_key:
                 raise RuntimeError("OPENAI_API_KEY not configured; cannot run structural analysis.")
@@ -2373,27 +2488,86 @@ def run_analyze_repo_step(job_id: str) -> None:
 
             timeout = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", 120))
 
-            payload = {
+            batch_count = len(batches)
+            partial_analyses: list[str] = []
+
+            # Progress range 20–75 is allocated to batch processing.
+            progress_per_batch = 55.0 / max(batch_count, 1)
+
+            for batch_idx, batch in enumerate(batches):
+                # Build content block for this batch.
+                content_sections: list[str] = []
+                for _size, path, text in batch:
+                    lang = _EXT_TO_LANG.get(os.path.splitext(path)[1].lower(), "")
+                    content_sections.append(f"### File: {path}\n```{lang}\n{text}\n```")
+
+                content_block = (
+                    "\n\n".join(content_sections)
+                    if content_sections
+                    else "(No text files in this batch)"
+                )
+                batch_user_message = (
+                    f"## Batch {batch_idx + 1} of {batch_count}\n\n"
+                    f"## File Contents\n\n{content_block}"
+                )
+
+                batch_payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _REPO_BATCH_SYSTEM_PROMPT},
+                        {"role": "user", "content": batch_user_message},
+                    ],
+                    "max_tokens": 4096,
+                    "temperature": 0.3,
+                }
+                with httpx.Client(timeout=timeout) as http:
+                    batch_response = http.post(
+                        completions_url,
+                        headers={
+                            "Authorization": f"Bearer {openai_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=batch_payload,
+                    )
+                batch_response.raise_for_status()
+                partial_analyses.append(
+                    batch_response.json()["choices"][0]["message"]["content"].strip()
+                )
+
+                batch_progress = int(20 + (batch_idx + 1) * progress_per_batch)
+                _update_job(job_id, progress=min(batch_progress, 75))
+
+            _update_job(job_id, progress=75)
+
+            # Aggregation call — synthesise all partial analyses into a final report.
+            partial_block = "\n\n---\n\n".join(
+                f"## Batch {i + 1} Analysis\n\n{p}" for i, p in enumerate(partial_analyses)
+            )
+            aggregate_user_message = (
+                f"## Repository File Tree\n\n{tree_summary}\n\n"
+                f"## Partial Batch Analyses\n\n{partial_block}"
+            )
+
+            aggregate_payload = {
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": _REPO_ANALYSIS_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
+                    {"role": "system", "content": _REPO_AGGREGATE_SYSTEM_PROMPT},
+                    {"role": "user", "content": aggregate_user_message},
                 ],
                 "max_tokens": 4096,
                 "temperature": 0.3,
             }
-
             with httpx.Client(timeout=timeout) as http:
-                response = http.post(
+                agg_response = http.post(
                     completions_url,
                     headers={
                         "Authorization": f"Bearer {openai_api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=payload,
+                    json=aggregate_payload,
                 )
-            response.raise_for_status()
-            analysis_md = response.json()["choices"][0]["message"]["content"].strip()
+            agg_response.raise_for_status()
+            analysis_md = agg_response.json()["choices"][0]["message"]["content"].strip()
 
             _update_job(job_id, progress=80)
 
@@ -2404,7 +2578,11 @@ def run_analyze_repo_step(job_id: str) -> None:
 
             # Save compact JSON summary as repo_structure_json artifact.
             structure_json = json.dumps(
-                {"file_tree": file_tree, "analysis_preview": analysis_md[:2000]},
+                {
+                    "file_tree": file_tree,
+                    "batch_count": batch_count,
+                    "analysis_preview": analysis_md[:2000],
+                },
                 ensure_ascii=False,
             ).encode("utf-8")
             json_key = storage.upload_bytes(

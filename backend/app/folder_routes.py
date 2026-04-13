@@ -603,8 +603,34 @@ async def upload_repo(
     if not storage.storage_available():
         raise HTTPException(status_code=502, detail="Storage not configured")
 
-    data = await repo.read()
-    key = storage.upload_bytes(str(fid), "repo.zip", data, "application/zip")
+    MAX_REPO_ZIP_BYTES = int(os.environ.get("MAX_REPO_ZIP_BYTES", 200 * 1024 * 1024))
+    _CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+            tmp_path = tmp.name
+            total_bytes = 0
+            while True:
+                chunk = await repo.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_REPO_ZIP_BYTES:
+                    limit_mb = MAX_REPO_ZIP_BYTES // (1024 * 1024)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Repo ZIP exceeds maximum allowed size of {limit_mb} MB",
+                    )
+                tmp.write(chunk)
+
+        key = storage.upload_file(str(fid), "repo.zip", tmp_path, "application/zip")
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except Exception:  # noqa: BLE001
+                pass
 
     artifact = Artifact(folder_id=fid, type="repo_zip", object_key=key)
     db.add(artifact)
