@@ -17,6 +17,7 @@ GET    /v1/folders/{folder_id}/messages         list chat messages              
 POST   /v1/folders/{folder_id}/jobs             enqueue a job                       [auth]
 GET    /v1/folders/{folder_id}/jobs             list jobs                           [auth]
 GET    /v1/folders/{folder_id}/jobs/{job_id}    get job status                      [auth]
+DELETE /v1/folders/{folder_id}/jobs/{job_id}    delete job + linked artifacts       [auth]
 
 All routes require ``Authorization: Bearer <API_KEY>`` when API_KEY is set.
 
@@ -200,6 +201,46 @@ def _find_active_analyze_job(db, folder_id: uuid.UUID):
         .where(Job.status.in_(["queued", "running"]))
         .order_by(Job.created_at.asc())
     ).first()
+
+
+def _recompute_folder_status(db, folder, folder_id: uuid.UUID) -> None:
+    """
+    Recompute and persist ``folder.status`` based on the remaining jobs.
+
+    Priority order (highest wins):
+      running → queued → succeeded (done) → failed → pending
+
+    If no jobs remain and there is no clip, the folder reverts to ``pending``.
+    If no jobs remain but a clip exists the folder is also ``pending`` (ready
+    for a new analysis run).
+    """
+    from sqlmodel import select
+
+    from backend.app.models import Job
+
+    remaining = db.exec(
+        select(Job).where(Job.folder_id == folder_id)
+    ).all()
+
+    if not remaining:
+        new_status = "pending"
+    else:
+        statuses = {j.status for j in remaining}
+        if "running" in statuses:
+            new_status = "running"
+        elif "queued" in statuses:
+            new_status = "queued"
+        elif "succeeded" in statuses:
+            new_status = "done"
+        elif "failed" in statuses:
+            new_status = "failed"
+        else:
+            new_status = "pending"
+
+    folder.status = new_status
+    folder.updated_at = datetime.now(timezone.utc)
+    db.add(folder)
+    db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -1270,6 +1311,124 @@ def get_job(folder_id: str, job_id: str, db=Depends(_db_session)) -> JSONRespons
         raise HTTPException(status_code=404, detail="Job not found")
 
     return JSONResponse(content={"job": _job_dict(job)})
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/folders/{folder_id}/jobs/{job_id}  — delete job + artifacts
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/{folder_id}/jobs/{job_id}",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def delete_job(folder_id: str, job_id: str, db=Depends(_db_session)) -> JSONResponse:
+    """
+    Delete a job and all artifacts that were produced by it, then update the
+    folder status to reflect the remaining jobs.
+
+    Rules
+    -----
+    - The job must belong to the specified folder (404 otherwise).
+    - Jobs in ``queued`` or ``running`` state cannot be deleted (HTTP 409).
+      Cancel / wait for the job to finish first.
+    - Artifact object-storage objects are deleted best-effort when R2 is
+      configured; a storage failure does **not** prevent the DB row from
+      being removed.
+
+    Response body
+    -------------
+    .. code-block:: json
+
+        {
+          "deleted_job_id": "<uuid>",
+          "deleted_artifact_ids": ["<uuid>", ...],
+          "folder_status": "<new-status>"
+        }
+    """
+    from sqlmodel import select
+
+    from backend.app import storage
+    from backend.app.models import Artifact, Job
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    jid = _parse_uuid(job_id, "job_id")
+
+    folder = _folder_or_404(db, fid)
+
+    job = db.get(Job, jid)
+    if job is None or job.folder_id != fid:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status in ("queued", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot delete a job with status '{job.status}'. "
+                "Wait for the job to finish or mark it as failed first."
+            ),
+        )
+
+    # Collect artifacts linked to this job.
+    artifacts = db.exec(
+        select(Artifact).where(
+            Artifact.folder_id == fid,
+            Artifact.job_id == jid,
+        )
+    ).all()
+
+    deleted_artifact_ids: list[str] = []
+
+    # Delete storage objects best-effort (ignore missing objects and storage errors).
+    if storage.storage_available():
+        for artifact in artifacts:
+            try:
+                storage.delete_object(artifact.object_key)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete storage object %s for artifact %s: %s",
+                    artifact.object_key,
+                    artifact.id,
+                    exc,
+                )
+
+    # Delete artifact DB rows.
+    for artifact in artifacts:
+        deleted_artifact_ids.append(str(artifact.id))
+        db.delete(artifact)
+
+    # Delete the job row.
+    db.delete(job)
+    db.commit()
+
+    # Recompute and persist the folder status.
+    db.refresh(folder)
+    _recompute_folder_status(db, folder, fid)
+
+    log_event(
+        source="backend",
+        level="info",
+        event_type="jobs.delete",
+        message=(
+            f"Job {jid} deleted from folder {fid}; "
+            f"{len(deleted_artifact_ids)} artifact(s) removed"
+        ),
+        folder_id=str(fid),
+        job_id=str(jid),
+        details_json={
+            "deleted_artifact_ids": deleted_artifact_ids,
+            "new_folder_status": folder.status,
+        },
+    )
+
+    return JSONResponse(
+        content={
+            "deleted_job_id": str(jid),
+            "deleted_artifact_ids": deleted_artifact_ids,
+            "folder_status": folder.status,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

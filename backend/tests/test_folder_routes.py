@@ -636,8 +636,306 @@ class TestJobs:
 
 
 # ---------------------------------------------------------------------------
-# Stalled-job watchdog
+# DELETE /v1/folders/{id}/jobs/{job_id}  — delete job + artifacts
 # ---------------------------------------------------------------------------
+
+
+def _create_job(client: TestClient, folder_id: str, job_type: str = "analyze") -> dict:
+    resp = client.post(
+        f"/v1/folders/{folder_id}/jobs",
+        json={"type": job_type},
+        headers=_auth(),
+    )
+    assert resp.status_code == 202, resp.text
+    return resp.json()["job"]
+
+
+def _seed_artifact(folder_id: str, job_id: str, artifact_type: str = "analysis_json") -> str:
+    """Insert an Artifact row directly into the DB and return its id."""
+    import uuid as _uuid
+
+    from sqlmodel import Session
+
+    import backend.app.database as db_module
+    from backend.app.models import Artifact
+
+    artifact = Artifact(
+        folder_id=_uuid.UUID(folder_id),
+        job_id=_uuid.UUID(job_id),
+        type=artifact_type,
+        object_key=f"folders/{folder_id}/{artifact_type}.json",
+    )
+    with Session(db_module.get_engine()) as session:
+        session.add(artifact)
+        session.commit()
+        session.refresh(artifact)
+        return str(artifact.id)
+
+
+class TestDeleteJob:
+    # ------------------------------------------------------------------
+    # Happy-path
+    # ------------------------------------------------------------------
+
+    def test_delete_succeeded_job_returns_200(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job = _create_job(client, fid)
+        jid = job["id"]
+
+        # Manually set status to succeeded so delete is allowed.
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        with Session(db_module.get_engine()) as s:
+            row = s.get(Job, uuid.UUID(jid))
+            row.status = "succeeded"
+            s.add(row)
+            s.commit()
+
+        resp = client.delete(f"/v1/folders/{fid}/jobs/{jid}", headers=_auth())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["deleted_job_id"] == jid
+        assert isinstance(body["deleted_artifact_ids"], list)
+        assert "folder_status" in body
+
+    def test_delete_removes_job_from_list(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job = _create_job(client, fid)
+        jid = job["id"]
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        with Session(db_module.get_engine()) as s:
+            row = s.get(Job, uuid.UUID(jid))
+            row.status = "failed"
+            s.add(row)
+            s.commit()
+
+        client.delete(f"/v1/folders/{fid}/jobs/{jid}", headers=_auth())
+
+        resp = client.get(f"/v1/folders/{fid}/jobs", headers=_auth())
+        assert all(j["id"] != jid for j in resp.json()["jobs"])
+
+    def test_delete_removes_linked_artifacts(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job = _create_job(client, fid)
+        jid = job["id"]
+
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import Artifact, Job
+
+        with Session(db_module.get_engine()) as s:
+            row = s.get(Job, uuid.UUID(jid))
+            row.status = "succeeded"
+            s.add(row)
+            s.commit()
+
+        aid = _seed_artifact(fid, jid, "analysis_json")
+
+        client.delete(f"/v1/folders/{fid}/jobs/{jid}", headers=_auth())
+
+        with Session(db_module.get_engine()) as s:
+            remaining = s.exec(
+                select(Artifact).where(Artifact.id == uuid.UUID(aid))
+            ).first()
+        assert remaining is None
+
+    def test_delete_returns_artifact_ids(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job = _create_job(client, fid)
+        jid = job["id"]
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        with Session(db_module.get_engine()) as s:
+            row = s.get(Job, uuid.UUID(jid))
+            row.status = "succeeded"
+            s.add(row)
+            s.commit()
+
+        aid1 = _seed_artifact(fid, jid, "analysis_json")
+        aid2 = _seed_artifact(fid, jid, "analysis_md")
+
+        resp = client.delete(f"/v1/folders/{fid}/jobs/{jid}", headers=_auth())
+        deleted_ids = set(resp.json()["deleted_artifact_ids"])
+        assert deleted_ids == {aid1, aid2}
+
+    def test_delete_does_not_remove_unrelated_artifacts(self, client: TestClient) -> None:
+        """Artifacts from a different job are not touched."""
+        folder = _create_folder(client)
+        fid = folder["id"]
+
+        job1 = _create_job(client, fid)
+        job2 = _create_job(client, fid, "blueprint")
+        jid1, jid2 = job1["id"], job2["id"]
+
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import Artifact, Job
+
+        with Session(db_module.get_engine()) as s:
+            for jid in (jid1, jid2):
+                row = s.get(Job, uuid.UUID(jid))
+                row.status = "succeeded"
+                s.add(row)
+            s.commit()
+
+        _seed_artifact(fid, jid1, "analysis_json")
+        kept_aid = _seed_artifact(fid, jid2, "blueprint_json")
+
+        client.delete(f"/v1/folders/{fid}/jobs/{jid1}", headers=_auth())
+
+        with Session(db_module.get_engine()) as s:
+            remaining = s.exec(
+                select(Artifact).where(Artifact.id == uuid.UUID(kept_aid))
+            ).first()
+        assert remaining is not None
+
+    def test_delete_updates_folder_status_to_pending_when_no_jobs_remain(
+        self, client: TestClient
+    ) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job = _create_job(client, fid)
+        jid = job["id"]
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        with Session(db_module.get_engine()) as s:
+            row = s.get(Job, uuid.UUID(jid))
+            row.status = "succeeded"
+            s.add(row)
+            s.commit()
+
+        resp = client.delete(f"/v1/folders/{fid}/jobs/{jid}", headers=_auth())
+        assert resp.json()["folder_status"] == "pending"
+
+        # Confirm via GET.
+        folder_resp = client.get(f"/v1/folders/{fid}", headers=_auth())
+        assert folder_resp.json()["status"] == "pending"
+
+    def test_delete_preserves_folder_done_when_other_succeeded_job_remains(
+        self, client: TestClient
+    ) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+
+        job1 = _create_job(client, fid)
+        job2 = _create_job(client, fid, "blueprint")
+        jid1, jid2 = job1["id"], job2["id"]
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        with Session(db_module.get_engine()) as s:
+            for jid in (jid1, jid2):
+                row = s.get(Job, uuid.UUID(jid))
+                row.status = "succeeded"
+                s.add(row)
+            s.commit()
+
+        resp = client.delete(f"/v1/folders/{fid}/jobs/{jid1}", headers=_auth())
+        assert resp.json()["folder_status"] == "done"
+
+    # ------------------------------------------------------------------
+    # Error cases
+    # ------------------------------------------------------------------
+
+    def test_delete_queued_job_returns_409(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job = _create_job(client, fid)
+        jid = job["id"]
+
+        resp = client.delete(f"/v1/folders/{fid}/jobs/{jid}", headers=_auth())
+        assert resp.status_code == 409
+        assert "queued" in resp.json()["detail"]
+
+    def test_delete_running_job_returns_409(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job = _create_job(client, fid)
+        jid = job["id"]
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        with Session(db_module.get_engine()) as s:
+            row = s.get(Job, uuid.UUID(jid))
+            row.status = "running"
+            s.add(row)
+            s.commit()
+
+        resp = client.delete(f"/v1/folders/{fid}/jobs/{jid}", headers=_auth())
+        assert resp.status_code == 409
+
+    def test_delete_nonexistent_job_returns_404(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        resp = client.delete(f"/v1/folders/{fid}/jobs/{uuid.uuid4()}", headers=_auth())
+        assert resp.status_code == 404
+
+    def test_delete_job_wrong_folder_returns_404(self, client: TestClient) -> None:
+        """A job that exists but belongs to a different folder returns 404."""
+        folder1 = _create_folder(client)
+        folder2 = _create_folder(client)
+        fid1, fid2 = folder1["id"], folder2["id"]
+
+        job = _create_job(client, fid1)
+        jid = job["id"]
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        with Session(db_module.get_engine()) as s:
+            row = s.get(Job, uuid.UUID(jid))
+            row.status = "failed"
+            s.add(row)
+            s.commit()
+
+        resp = client.delete(f"/v1/folders/{fid2}/jobs/{jid}", headers=_auth())
+        assert resp.status_code == 404
+
+    def test_delete_nonexistent_folder_returns_404(self, client: TestClient) -> None:
+        resp = client.delete(
+            f"/v1/folders/{uuid.uuid4()}/jobs/{uuid.uuid4()}", headers=_auth()
+        )
+        assert resp.status_code == 404
+
+    def test_delete_requires_auth(self, client: TestClient) -> None:
+        resp = client.delete(f"/v1/folders/{uuid.uuid4()}/jobs/{uuid.uuid4()}")
+        assert resp.status_code == 401
+
+    def test_delete_invalid_job_uuid_returns_400(self, client: TestClient) -> None:
+        folder = _create_folder(client)
+        fid = folder["id"]
+        resp = client.delete(f"/v1/folders/{fid}/jobs/not-a-uuid", headers=_auth())
+        assert resp.status_code == 400
 
 
 class TestWatchdog:

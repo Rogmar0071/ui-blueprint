@@ -184,7 +184,12 @@ def _get_folder(folder_id: str):
         return session.get(Folder, uuid.UUID(folder_id))
 
 
-def _create_artifact(folder_id: str, artifact_type: str, object_key: str) -> None:
+def _create_artifact(
+    folder_id: str,
+    artifact_type: str,
+    object_key: str,
+    job_id: str | None = None,
+) -> None:
     from sqlmodel import Session, select
 
     from backend.app.database import get_engine
@@ -203,6 +208,8 @@ def _create_artifact(folder_id: str, artifact_type: str, object_key: str) -> Non
         "clip",
     }
 
+    job_uuid = uuid.UUID(job_id) if job_id else None
+
     with Session(get_engine()) as session:
         if artifact_type in UPSERT_TYPES:
             existing = session.exec(
@@ -213,12 +220,14 @@ def _create_artifact(folder_id: str, artifact_type: str, object_key: str) -> Non
             ).first()
             if existing:
                 existing.object_key = object_key
+                existing.job_id = job_uuid
                 session.add(existing)
             else:
                 artifact = Artifact(
                     folder_id=uuid.UUID(folder_id),
                     type=artifact_type,
                     object_key=object_key,
+                    job_id=job_uuid,
                 )
                 session.add(artifact)
         else:
@@ -226,9 +235,11 @@ def _create_artifact(folder_id: str, artifact_type: str, object_key: str) -> Non
                 folder_id=uuid.UUID(folder_id),
                 type=artifact_type,
                 object_key=object_key,
+                job_id=job_uuid,
             )
             session.add(artifact)
         session.commit()
+
 
 
 def _update_folder_status(folder_id: str, status: str) -> None:
@@ -638,7 +649,7 @@ def _analyze_optional_keyframes(job_id: str, folder_id: str, job) -> None:
         kf_key = storage.upload_bytes(
             folder_id, "keyframes.json", keyframes_bytes, "application/json"
         )
-        _create_artifact(folder_id, "keyframes_json", kf_key)
+        _create_artifact(folder_id, "keyframes_json", kf_key, job_id=job_id)
         _log_event(
             source="worker",
             level="info",
@@ -734,7 +745,7 @@ def _analyze_manifest(job_id: str, folder_id: str, job) -> None:
         manifest_key = storage.upload_bytes(
             folder_id, "segments/manifest.json", manifest_bytes, "application/json"
         )
-        _create_artifact(folder_id, "segments_manifest_json", manifest_key)
+        _create_artifact(folder_id, "segments_manifest_json", manifest_key, job_id=job_id)
         _log_event(
             source="worker",
             level="info",
@@ -882,7 +893,7 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
                     baseline_bytes,
                     "application/json",
                 )
-                _create_artifact(folder_id, "baseline_segment_json", bl_key)
+                _create_artifact(folder_id, "baseline_segment_json", bl_key, job_id=job_id)
             except Exception:
                 pass  # storage unavailable – still advance cursor
 
@@ -985,7 +996,7 @@ def _analyze_aggregate(job_id: str, folder_id: str, job) -> None:
             analysis_bytes,
             "application/json",
         )
-        _create_artifact(folder_id, "analysis_json", analysis_key)
+        _create_artifact(folder_id, "analysis_json", analysis_key, job_id=job_id)
         _log_event(
             source="worker",
             level="info",
@@ -1021,7 +1032,7 @@ def _analyze_aggregate(job_id: str, folder_id: str, job) -> None:
         md_key = storage.upload_bytes(
             folder_id, "analysis/analysis.md", md_bytes, "text/markdown"
         )
-        _create_artifact(folder_id, "analysis_md", md_key)
+        _create_artifact(folder_id, "analysis_md", md_key, job_id=job_id)
     except Exception:
         pass
 
@@ -1437,7 +1448,7 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
                         artifact_bytes,
                         "application/json",
                     )
-                    _create_artifact(folder_id, artifact_type, obj_key)
+                    _create_artifact(folder_id, artifact_type, obj_key, job_id=job_id)
                 except Exception:
                     pass  # storage unavailable – still advance cursor
 
@@ -1624,7 +1635,7 @@ def _analyze_summarize(job_id: str, folder_id: str, job) -> None:
         analysis_key = storage.upload_bytes(
             folder_id, "analysis.json", analysis_bytes, "application/json"
         )
-        _create_artifact(folder_id, "analysis_json", analysis_key)
+        _create_artifact(folder_id, "analysis_json", analysis_key, job_id=job_id)
         _log_event(
             source="worker",
             level="info",
@@ -1645,7 +1656,7 @@ def _analyze_summarize(job_id: str, folder_id: str, job) -> None:
             md_key = storage.upload_bytes(
                 folder_id, "analysis.md", md_bytes, "text/markdown"
             )
-            _create_artifact(folder_id, "analysis_md", md_key)
+            _create_artifact(folder_id, "analysis_md", md_key, job_id=job_id)
             _log_event(
                 source="worker",
                 level="info",
@@ -1879,7 +1890,7 @@ def run_analyze(job_id: str) -> None:
             analysis_key = storage.upload_bytes(
                 folder_id, "analysis.json", analysis_bytes, "application/json"
             )
-            _create_artifact(folder_id, "analysis_json", analysis_key)
+            _create_artifact(folder_id, "analysis_json", analysis_key, job_id=job_id)
             _log_event(
                 source="worker",
                 level="info",
@@ -1900,7 +1911,7 @@ def run_analyze(job_id: str) -> None:
                 md_key = storage.upload_bytes(
                     folder_id, "analysis.md", md_bytes, "text/markdown"
                 )
-                _create_artifact(folder_id, "analysis_md", md_key)
+                _create_artifact(folder_id, "analysis_md", md_key, job_id=job_id)
                 _log_event(
                     source="worker",
                     level="info",
@@ -2067,7 +2078,7 @@ def run_blueprint(job_id: str) -> None:
                 with open(os.path.join(preview_dir, fname), "rb") as fh:
                     png_bytes = fh.read()
                 key = storage.upload_bytes(folder_id, f"preview/{fname}", png_bytes, "image/png")
-                _create_artifact(folder_id, "preview_png", key)
+                _create_artifact(folder_id, "preview_png", key, job_id=job_id)
                 _log_event(
                     source="worker",
                     level="info",
@@ -2084,7 +2095,7 @@ def run_blueprint(job_id: str) -> None:
             bp_key = storage.upload_bytes(
                 folder_id, "blueprint.json", analysis_bytes, "application/json"
             )
-            _create_artifact(folder_id, "blueprint_json", bp_key)
+            _create_artifact(folder_id, "blueprint_json", bp_key, job_id=job_id)
             _log_event(
                 source="worker",
                 level="info",
@@ -2101,7 +2112,7 @@ def run_blueprint(job_id: str) -> None:
             md_key = storage.upload_bytes(
                 folder_id, "blueprint.md", bp_md_bytes, "text/markdown"
             )
-            _create_artifact(folder_id, "blueprint_md", md_key)
+            _create_artifact(folder_id, "blueprint_md", md_key, job_id=job_id)
             _log_event(
                 source="worker",
                 level="info",
@@ -2574,7 +2585,7 @@ def run_analyze_repo_step(job_id: str) -> None:
             # Save Markdown report as repo_analysis_md artifact.
             md_bytes = analysis_md.encode("utf-8")
             md_key = storage.upload_bytes(folder_id, "repo_analysis.md", md_bytes, "text/markdown")
-            _create_artifact(folder_id, "repo_analysis_md", md_key)
+            _create_artifact(folder_id, "repo_analysis_md", md_key, job_id=job_id)
 
             # Save compact JSON summary as repo_structure_json artifact.
             structure_json = json.dumps(
@@ -2588,7 +2599,7 @@ def run_analyze_repo_step(job_id: str) -> None:
             json_key = storage.upload_bytes(
                 folder_id, "repo_structure.json", structure_json, "application/json"
             )
-            _create_artifact(folder_id, "repo_structure_json", json_key)
+            _create_artifact(folder_id, "repo_structure_json", json_key, job_id=job_id)
 
             _update_job(job_id, status="succeeded", progress=100)
             _log_event(

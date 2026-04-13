@@ -171,6 +171,25 @@ def get_object_to_file(object_key: str, local_path: str) -> bool:
         raise
 
 
+def delete_object(object_key: str) -> bool:
+    """
+    Delete *object_key* from R2.
+
+    Returns ``True`` if the object was deleted, ``False`` if it did not exist.
+    Raises ``RuntimeError`` if R2 is not configured.
+    """
+    import botocore.exceptions
+
+    client = _get_client()
+    try:
+        client.delete_object(Bucket=_bucket(), Key=object_key)
+        return True
+    except botocore.exceptions.ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+            return False
+        raise
+
+
 def upload_file(
     folder_id: str,
     filename: str,

@@ -195,6 +195,12 @@ class Artifact(SQLModel, table=True):
         foreign_key="folders.id",
         index=True,
     )
+    # The job that produced this artifact.  NULL for artifacts created directly
+    # by the API (e.g. the 'clip' artifact uploaded via /clip).
+    job_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, nullable=True, index=True),
+    )
     # clip / analysis_json / analysis_md / blueprint_json / blueprint_md / transcript
     type: str
     object_key: str
