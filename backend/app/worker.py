@@ -241,7 +241,6 @@ def _create_artifact(
         session.commit()
 
 
-
 def _update_folder_status(folder_id: str, status: str) -> None:
     from sqlmodel import Session
 
