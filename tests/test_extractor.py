@@ -28,18 +28,23 @@ from ui_blueprint.extractor import (
     SCHEMA_VERSION,
     _generate_synthetic_frame,
     _ocr_region,
+    analyze_audio_transcript,
     analyze_clip,
+    analyze_video_ui,
     build_tree_from_nodes,
     chunk_ui_tree,
     extract,
+    extract_audio_track,
     extract_keyframes,
     extract_ocr,
     extract_segment,
     extract_transcript,
+    extract_video_track,
     preprocess_ui_tree,
     prune_ui_tree,
     save_blueprint,
     segment_ui_tree,
+    split_and_analyze,
 )
 
 # ---------------------------------------------------------------------------
@@ -605,3 +610,211 @@ class TestAnalyzeClip:
         with warnings.catch_warnings(record=True):
             result = analyze_clip(big_tree)
         assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# Split video/audio analysis pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestExtractVideoTrack:
+    def test_returns_false_on_missing_file(self, tmp_path: Path) -> None:
+        assert extract_video_track("/nonexistent/clip.mp4", str(tmp_path / "out.mp4")) is False
+
+    def test_returns_true_for_real_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "src.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        out = tmp_path / "video_only.mp4"
+        result = extract_video_track(str(src), str(out))
+        assert result is True
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+
+class TestExtractAudioTrack:
+    def test_returns_false_on_missing_file(self, tmp_path: Path) -> None:
+        assert extract_audio_track("/nonexistent/clip.mp4", str(tmp_path / "out.wav")) is False
+
+    def test_returns_false_for_silent_video(self, tmp_path: Path) -> None:
+        """A synthetic video-only file has no audio stream; extraction yields False."""
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "src.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        out = tmp_path / "audio_only.wav"
+        # Silent video: ffmpeg will produce an empty/missing output → False
+        result = extract_audio_track(str(src), str(out))
+        assert isinstance(result, bool)
+
+
+class TestAnalyzeVideoUI:
+    def test_returns_expected_shape_on_missing_file(self) -> None:
+        result = analyze_video_ui("/nonexistent/video.mp4")
+        assert "elements_catalog" in result
+        assert "chunks" in result
+        assert "events" in result
+        assert "quality" in result
+        assert isinstance(result["elements_catalog"], list)
+        assert isinstance(result["chunks"], list)
+        assert isinstance(result["events"], list)
+
+    def test_returns_data_for_real_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "video_only.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        result = analyze_video_ui(str(src))
+        assert isinstance(result["elements_catalog"], list)
+        assert isinstance(result["chunks"], list)
+
+
+class TestAnalyzeAudioTranscript:
+    def test_returns_transcript_key(self, tmp_path: Path) -> None:
+        result = analyze_audio_transcript(str(tmp_path / "dummy.wav"))
+        assert "transcript" in result
+        assert isinstance(result["transcript"], str)
+
+    def test_falls_back_on_error(self) -> None:
+        result = analyze_audio_transcript("/nonexistent/audio.wav")
+        assert "transcript" in result
+        assert isinstance(result["transcript"], str)
+
+
+class TestSplitAndAnalyze:
+    def test_returns_expected_shape_on_missing_file(self) -> None:
+        result = split_and_analyze("/nonexistent/clip.mp4")
+        assert "ui_structure" in result
+        assert "audio_transcript" in result
+        assert isinstance(result["ui_structure"], dict)
+        assert isinstance(result["audio_transcript"], dict)
+        assert "elements_catalog" in result["ui_structure"]
+        assert "transcript" in result["audio_transcript"]
+
+    def test_accepts_explicit_output_paths(self, tmp_path: Path) -> None:
+        video_out = str(tmp_path / "video.mp4")
+        audio_out = str(tmp_path / "audio.wav")
+        result = split_and_analyze(
+            "/nonexistent/clip.mp4",
+            video_out=video_out,
+            audio_out=audio_out,
+        )
+        assert "ui_structure" in result
+        assert "audio_transcript" in result
+
+    def test_returns_data_for_real_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "clip.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        result = split_and_analyze(str(src))
+        assert "ui_structure" in result
+        assert "audio_transcript" in result
+        assert isinstance(result["ui_structure"]["elements_catalog"], list)
+        assert isinstance(result["audio_transcript"]["transcript"], str)
+
+
+class TestSplitAnalyzeCLI:
+    def test_split_analyze_missing_clip(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "ui_blueprint",
+                "split-analyze", "/nonexistent/clip.mp4",
+                "--ui-output", str(tmp_path / "ui.json"),
+                "--audio-output", str(tmp_path / "audio.json"),
+                "--combined-output", str(tmp_path / "combined.json"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+
+    def test_split_analyze_synthetic_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "clip.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        ui_json = tmp_path / "ui.json"
+        audio_json = tmp_path / "audio.json"
+        combined_json = tmp_path / "combined.json"
+
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "ui_blueprint",
+                "split-analyze", str(src),
+                "--ui-output", str(ui_json),
+                "--audio-output", str(audio_json),
+                "--combined-output", str(combined_json),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, (
+            f"split-analyze failed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert ui_json.exists()
+        assert audio_json.exists()
+        assert combined_json.exists()
+
+        with combined_json.open() as fh:
+            combined = json.load(fh)
+        assert "ui_structure" in combined
+        assert "audio_transcript" in combined
