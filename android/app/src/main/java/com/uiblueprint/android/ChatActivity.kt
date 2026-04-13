@@ -1,14 +1,19 @@
 package com.uiblueprint.android
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.view.View
 import android.widget.EditText
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -46,6 +51,36 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "ChatActivity-worker") }
     private lateinit var adapter: ChatMessageAdapter
 
+    private val speechInputLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val matches = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            if (!matches.isNullOrEmpty()) {
+                val current = binding.etMessage.text.toString()
+                binding.etMessage.setText(
+                    if (current.isBlank()) matches[0] else "$current ${matches[0]}"
+                )
+                binding.etMessage.setSelection(binding.etMessage.text.length)
+            }
+        }
+    }
+
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            startSpeechRecognition()
+        } else {
+            Toast.makeText(
+                this,
+                getString(R.string.toast_mic_permission_denied),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
     companion object {
         private const val PREFS_NAME = "chat_prefs"
         private const val PREF_AGENT_MODE = "agent_mode"
@@ -71,6 +106,8 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         }
 
         binding.btnSend.setOnClickListener { onSendClicked() }
+
+        setupMicButton()
 
         // Multi-select toolbar buttons
         binding.btnSelectAll.setOnClickListener {
@@ -360,5 +397,36 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
     private fun showError(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    // -------------------------------------------------------------------------
+    // Voice / microphone input
+    // -------------------------------------------------------------------------
+
+    private fun setupMicButton() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            binding.btnMic.isEnabled = false
+            Toast.makeText(this, getString(R.string.toast_mic_not_supported), Toast.LENGTH_SHORT).show()
+            return
+        }
+        binding.btnMic.setOnClickListener { onMicClicked() }
+    }
+
+    private fun onMicClicked() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startSpeechRecognition()
+        } else {
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startSpeechRecognition() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.btn_mic))
+        }
+        speechInputLauncher.launch(intent)
     }
 }
