@@ -17,18 +17,23 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /**
  * Foreground service that records audio from the device microphone (no
  * MediaProjection required).
  *
+ * **Usage**
+ * ---------
  * Start the service with an Intent containing:
  *   - [EXTRA_MAX_DURATION_MS]  — maximum recording duration in ms (default 300 000)
  *
+ * **Broadcasts**
+ * --------------
  * When recording completes (or an error occurs) the service sends a broadcast
  * [ACTION_AUDIO_CAPTURE_DONE] with extras:
- *   - [EXTRA_AUDIO_PATH]           — absolute path to the .m4a file, or null on error
- *   - [EXTRA_ERROR]                — error string, or null on success
+ *   - [EXTRA_AUDIO_PATH]            — absolute path to the .m4a file, or null on error
+ *   - [EXTRA_ERROR]                 — error string, or null on success
  *   - [EXTRA_RECORDING_DURATION_MS] — actual elapsed duration in ms
  *
  * Stop early by calling [stop].
@@ -41,6 +46,15 @@ class AudioCaptureService : Service() {
     private val stopRunnable = Runnable { finishRecording() }
     private var recordingStartedAtMs: Long? = null
     private var isStopped = false
+
+    /**
+     * Single-threaded executor that runs blocking `MediaRecorder` setup off the
+     * main/handler thread so that the **event loop is never stalled** by
+     * synchronous I/O or codec initialisation.  (D1, D3)
+     */
+    private val setupExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "AudioCaptureService-setup").also { it.isDaemon = true }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -70,11 +84,13 @@ class AudioCaptureService : Service() {
             return
         }
 
+        // D1: Create the output file path on the calling thread (fast, no blocking I/O).
         outputFile = File(
             outputDir,
             "audio_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.m4a",
         )
 
+        // Initialise the MediaRecorder instance on the main thread (lightweight).
         try {
             mediaRecorder = MediaRecorder(this).apply {
                 setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -83,31 +99,114 @@ class AudioCaptureService : Service() {
                 setAudioEncodingBitRate(128_000)
                 setAudioSamplingRate(44_100)
                 setOutputFile(outputFile!!.absolutePath)
-                prepare()
+                // prepare() and start() are blocking — deferred to setupExecutor below.
             }
-            mediaRecorder!!.start()
-            recordingStartedAtMs = SystemClock.elapsedRealtime()
-            handler.postDelayed(stopRunnable, maxDurationMs)
-        } catch (e: SecurityException) {
-            Log.e(TAG, "RECORD_AUDIO permission not granted", e)
-            mediaRecorder?.release()
-            mediaRecorder = null
-            broadcastDone(
-                audioPath = null,
-                error = "RECORD_AUDIO permission is required for audio recording.",
-                durationMs = 0,
-            )
-            stopSelf()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start audio recording", e)
+            Log.e(TAG, "Failed to configure MediaRecorder", e)
             mediaRecorder?.release()
             mediaRecorder = null
             broadcastDone(
                 audioPath = null,
-                error = "Failed to start audio recording: ${e.message}",
+                error = "Failed to configure audio recorder: ${e.message}",
                 durationMs = 0,
             )
             stopSelf()
+            return
+        }
+
+        // D1/D3: Off-load blocking prepare()/start() to a background thread so the
+        // main/handler event loop is never stalled by synchronous codec initialisation.
+        setupExecutor.execute {
+            // D3: Short yield before blocking setup to let any pending handler messages
+            // be processed first (prevents CPU busy-wait on the main thread).
+            try {
+                AudioProcessingTimeoutHelper.yieldToEventLoop()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return@execute
+            }
+
+            val mr = mediaRecorder
+            if (mr == null) {
+                Log.w(TAG, "MediaRecorder released before background setup started; aborting")
+                return@execute
+            }
+
+            // D2: Wrap prepare() in a timeout to avoid indefinite hangs.
+            val prepareResult = AudioProcessingTimeoutHelper.withTimeout(CODEC_TIMEOUT_MS) {
+                mr.prepare()
+            }
+            when (prepareResult) {
+                is AudioProcessingTimeoutHelper.TimeoutResult.TimedOut -> {
+                    Log.e(TAG, "MediaRecorder.prepare() timed out after ${CODEC_TIMEOUT_MS}ms")
+                    handler.post {
+                        mediaRecorder?.release()
+                        mediaRecorder = null
+                        broadcastDone(audioPath = null, error = "Audio setup timed out.", durationMs = 0)
+                        stopSelf()
+                    }
+                    return@execute
+                }
+                is AudioProcessingTimeoutHelper.TimeoutResult.Error -> {
+                    val e = prepareResult.exception
+                    val isPermissionError = e is SecurityException
+                    Log.e(TAG, if (isPermissionError) "RECORD_AUDIO permission not granted" else "MediaRecorder.prepare() failed", e)
+                    handler.post {
+                        mediaRecorder?.release()
+                        mediaRecorder = null
+                        broadcastDone(
+                            audioPath = null,
+                            error = if (isPermissionError)
+                                "RECORD_AUDIO permission is required for audio recording."
+                            else
+                                "Failed to start audio recording: ${e.message}",
+                            durationMs = 0,
+                        )
+                        stopSelf()
+                    }
+                    return@execute
+                }
+                is AudioProcessingTimeoutHelper.TimeoutResult.Success -> Unit // continue
+            }
+
+            // D2: Wrap start() in a timeout as well.
+            val startResult = AudioProcessingTimeoutHelper.withTimeout(CODEC_TIMEOUT_MS) {
+                mr.start()
+            }
+            when (startResult) {
+                is AudioProcessingTimeoutHelper.TimeoutResult.TimedOut -> {
+                    Log.e(TAG, "MediaRecorder.start() timed out after ${CODEC_TIMEOUT_MS}ms")
+                    handler.post {
+                        mediaRecorder?.release()
+                        mediaRecorder = null
+                        broadcastDone(audioPath = null, error = "Audio start timed out.", durationMs = 0)
+                        stopSelf()
+                    }
+                    return@execute
+                }
+                is AudioProcessingTimeoutHelper.TimeoutResult.Error -> {
+                    val e = startResult.exception
+                    Log.e(TAG, "MediaRecorder.start() failed", e)
+                    handler.post {
+                        mediaRecorder?.release()
+                        mediaRecorder = null
+                        broadcastDone(
+                            audioPath = null,
+                            error = "Failed to start audio recording: ${e.message}",
+                            durationMs = 0,
+                        )
+                        stopSelf()
+                    }
+                    return@execute
+                }
+                is AudioProcessingTimeoutHelper.TimeoutResult.Success -> Unit // recording started
+            }
+
+            // Recording is now active — post the start timestamp and stop-timer to the main thread.
+            handler.post {
+                recordingStartedAtMs = SystemClock.elapsedRealtime()
+                handler.postDelayed(stopRunnable, maxDurationMs)
+            }
         }
     }
 
@@ -162,12 +261,23 @@ class AudioCaptureService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(stopRunnable)
+        // Allow the background setup thread to finish naturally before interrupting,
+        // so that any in-progress MediaRecorder operation can release cleanly.
+        setupExecutor.shutdown()
+        try {
+            if (!setupExecutor.awaitTermination(CODEC_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                setupExecutor.shutdownNow()
+            }
+        } catch (_: InterruptedException) {
+            setupExecutor.shutdownNow()
+            Thread.currentThread().interrupt()
+        }
         mediaRecorder?.release()
         super.onDestroy()
     }
 
     // -------------------------------------------------------------------------
-    // Notification
+    // **Notification**
     // -------------------------------------------------------------------------
 
     private fun createNotificationChannel() {
@@ -202,7 +312,13 @@ class AudioCaptureService : Service() {
         private const val DEFAULT_MAX_DURATION_MS = 300_000L
 
         /**
-         * Send a stop intent to terminate an active [AudioCaptureService] session.
+         * **Maximum time** allowed for a single codec/prepare/start call before it is
+         * considered hung and aborted.  (D2)
+         */
+        private const val CODEC_TIMEOUT_MS = 5_000L
+
+        /**
+         * **Stop** — send a stop intent to terminate an active [AudioCaptureService] session.
          */
         fun stop(context: Context) {
             context.stopService(Intent(context, AudioCaptureService::class.java))

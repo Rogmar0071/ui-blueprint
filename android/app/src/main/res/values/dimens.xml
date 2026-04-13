@@ -9,4 +9,16 @@
     <dimen name="send_btn_size">36dp</dimen>
     <dimen name="card_radius">12dp</dimen>
     <dimen name="message_card_radius">18dp</dimen>
+
+    <!-- Default message card inner padding and text size (user messages). -->
+    <dimen name="default_message_card_padding">12dp</dimen>
+    <dimen name="default_message_text_size">14sp</dimen>
+
+    <!--
+        AI response block dimensions — 80% larger than the defaults above.
+          12dp * 1.8 = 21.6dp → 22dp
+          14sp * 1.8 = 25.2sp → 25sp
+    -->
+    <dimen name="ai_response_card_padding">22dp</dimen>
+    <dimen name="ai_response_text_size">25sp</dimen>
 </resources>

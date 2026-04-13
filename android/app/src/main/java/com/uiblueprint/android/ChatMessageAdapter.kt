@@ -3,10 +3,11 @@ package com.uiblueprint.android
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
+import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
@@ -16,11 +17,14 @@ import com.google.android.material.card.MaterialCardView
 /**
  * RecyclerView adapter for global chat messages.
  *
- * Features
- * --------
+ * **Features**
+ * ------------
  * - Always-visible action row: Copy, Share (all messages), Edit (user messages only).
- * - Artifact rendering: if a message contains lines beginning with "ARTIFACT_",
+ * - Artifact rendering: if a message contains lines beginning with `ARTIFACT_`,
  *   those are displayed in a monospace card with its own Copy button.
+ * - **Code-fence rendering**: markdown fenced code blocks (` ``` `) in AI responses
+ *   are extracted and rendered in the same monospace copy-code card.  Only code
+ *   appears in the copy block; prose text stays in the normal message view.
  * - Multi-select mode: long-press a message to enter selection mode.
  *   Selected messages are highlighted. The host activity is notified via
  *   [SelectionListener] to show/hide a contextual action toolbar.
@@ -33,7 +37,7 @@ class ChatMessageAdapter(
 ) : RecyclerView.Adapter<ChatMessageAdapter.ViewHolder>() {
 
     // -------------------------------------------------------------------------
-    // Public data class
+    // **Public Data Class**
     // -------------------------------------------------------------------------
 
     data class Message(
@@ -44,7 +48,7 @@ class ChatMessageAdapter(
     )
 
     // -------------------------------------------------------------------------
-    // Listener interfaces
+    // **Listener Interfaces**
     // -------------------------------------------------------------------------
 
     interface MessageActionListener {
@@ -55,7 +59,7 @@ class ChatMessageAdapter(
     }
 
     // -------------------------------------------------------------------------
-    // State
+    // **State**
     // -------------------------------------------------------------------------
 
     private val items = mutableListOf<Message>()
@@ -64,11 +68,12 @@ class ChatMessageAdapter(
         private set
 
     // -------------------------------------------------------------------------
-    // ViewHolder
+    // **ViewHolder**
     // -------------------------------------------------------------------------
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val cardMessage: MaterialCardView = view.findViewById(R.id.cardMessage)
+        val layoutMessageContent: LinearLayout = view.findViewById(R.id.layoutMessageContent)
         val tvRole: TextView = view.findViewById(R.id.tvRole)
         val tvContent: TextView = view.findViewById(R.id.tvContent)
         val cardArtifact: MaterialCardView = view.findViewById(R.id.cardArtifact)
@@ -80,7 +85,7 @@ class ChatMessageAdapter(
     }
 
     // -------------------------------------------------------------------------
-    // Adapter overrides
+    // **Adapter Overrides**
     // -------------------------------------------------------------------------
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -97,6 +102,19 @@ class ChatMessageAdapter(
 
         // Role label
         holder.tvRole.text = if (msg.role == "user") "You" else "AI"
+
+        // AI response blocks are 80% larger than user message blocks (D5).
+        val isAiMessage = msg.role != "user"
+        val paddingPx = context.resources.getDimensionPixelSize(
+            if (isAiMessage) R.dimen.ai_response_card_padding else R.dimen.default_message_card_padding,
+        )
+        holder.layoutMessageContent.setPadding(paddingPx, paddingPx, paddingPx, paddingPx)
+        holder.tvContent.setTextSize(
+            TypedValue.COMPLEX_UNIT_PX,
+            context.resources.getDimension(
+                if (isAiMessage) R.dimen.ai_response_text_size else R.dimen.default_message_text_size,
+            ),
+        )
 
         // Superseded styling
         holder.itemView.alpha = if (msg.superseded) 0.45f else 1.0f
@@ -158,7 +176,7 @@ class ChatMessageAdapter(
     }
 
     // -------------------------------------------------------------------------
-    // Data helpers
+    // **Data Helpers**
     // -------------------------------------------------------------------------
 
     fun submitList(newItems: List<Message>) {
@@ -170,7 +188,7 @@ class ChatMessageAdapter(
     }
 
     // -------------------------------------------------------------------------
-    // Multi-select helpers
+    // **Multi-Select Helpers**
     // -------------------------------------------------------------------------
 
     private fun toggleSelection(id: String) {
@@ -205,36 +223,81 @@ class ChatMessageAdapter(
         items.filter { selectedIds.contains(it.id) }
 
     // -------------------------------------------------------------------------
-    // Artifact parsing
+    // **Artifact / Code Parsing**
     // -------------------------------------------------------------------------
 
     /**
-     * Splits [content] into a (preamble, artifactBlock?) pair.
+     * Splits [content] into a `(preamble, codeBlock?)` pair.
      *
-     * If any line starts with "ARTIFACT_" followed by a colon, all such lines
-     * (and adjacent non-empty lines between them) are treated as the artifact
-     * block.  Text before the first ARTIFACT_ line is returned as preamble.
-     * Returns (content, null) when no artifact blocks are found.
+     * **Priority 1 — ARTIFACT_ blocks:** if any line starts with `ARTIFACT_`
+     * followed by a colon, all lines from that point onward are treated as the
+     * artifact block and placed in the copy-code card.  Text before the first
+     * `ARTIFACT_` line is returned as preamble.
+     *
+     * **Priority 2 — Markdown code fences:** if the content contains one or more
+     * fenced code blocks (` ``` `), only the **code inside the fences** is placed
+     * in the copy-code card.  The surrounding prose is returned as preamble.
+     * When multiple fenced blocks are present they are joined with a blank line.
+     *
+     * Returns `(content, null)` when neither pattern is found.
      */
     private fun splitArtifactContent(content: String): Pair<String, String?> {
+        // --- Priority 1: ARTIFACT_ blocks (existing behaviour) ---
         val lines = content.lines()
         val firstArtifactIdx = lines.indexOfFirst {
             val trimmed = it.trimStart()
             trimmed.startsWith("ARTIFACT_") && trimmed.contains(":")
         }
-        if (firstArtifactIdx < 0) return content to null
+        if (firstArtifactIdx >= 0) {
+            val preamble = lines.take(firstArtifactIdx).joinToString("\n")
+            val artifactPart = lines.drop(firstArtifactIdx).joinToString("\n")
+            return preamble to artifactPart
+        }
 
-        val preamble = lines.take(firstArtifactIdx).joinToString("\n")
-        val artifactPart = lines.drop(firstArtifactIdx).joinToString("\n")
-        return preamble to artifactPart
+        // --- Priority 2: Markdown fenced code blocks ---
+        val fenceMatches = CODE_FENCE_REGEX.findAll(content).toList()
+        if (fenceMatches.isEmpty()) return content to null
+
+        // Extract inner code from each fence, stripping the opening/closing markers.
+        val codeBlocks = fenceMatches.joinToString("\n\n") { match ->
+            CODE_FENCE_INNER_REGEX.find(match.value)?.groupValues?.get(1)?.trimEnd() ?: match.value
+        }
+
+        // Remove fenced blocks from the prose, collapsing any resulting blank lines.
+        val proseOnly = CODE_FENCE_REGEX.replace(content, "")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+
+        return proseOnly to codeBlocks
     }
 
     // -------------------------------------------------------------------------
-    // Clipboard helper
+    // **Clipboard Helper**
     // -------------------------------------------------------------------------
 
     private fun copyToClipboard(context: Context, text: String) {
         val clipboard = ContextCompat.getSystemService(context, ClipboardManager::class.java)
         clipboard?.setPrimaryClip(ClipData.newPlainText("chat_artifact", text))
+    }
+
+    // -------------------------------------------------------------------------
+    // **Companion**
+    // -------------------------------------------------------------------------
+
+    companion object {
+        /**
+         * Matches a complete fenced code block including its opening/closing ` ``` `
+         * markers and optional language tag (e.g. ` ```kotlin `).
+         * The newline after the opening marker is optional to handle single-line fences.
+         */
+        private val CODE_FENCE_REGEX = Regex("""```[\w]*\n?[\s\S]*?```""")
+
+        /**
+         * Captures the **inner code content** of a single fenced block,
+         * stripping the opening marker (with optional language tag) and
+         * the closing ` ``` `.
+         * The newline after the opening marker is optional to handle single-line fences.
+         */
+        private val CODE_FENCE_INNER_REGEX = Regex("""```[\w]*\n?([\s\S]*?)```""")
     }
 }
