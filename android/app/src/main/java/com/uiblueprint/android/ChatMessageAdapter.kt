@@ -103,17 +103,11 @@ class ChatMessageAdapter(
         // Role label
         holder.tvRole.text = if (msg.role == "user") "You" else "AI"
 
-        // AI response blocks are 80% larger than user message blocks (D5).
-        val isAiMessage = msg.role != "user"
-        val paddingPx = context.resources.getDimensionPixelSize(
-            if (isAiMessage) R.dimen.ai_response_card_padding else R.dimen.default_message_card_padding,
-        )
+        val paddingPx = context.resources.getDimensionPixelSize(R.dimen.default_message_card_padding)
         holder.layoutMessageContent.setPadding(paddingPx, paddingPx, paddingPx, paddingPx)
         holder.tvContent.setTextSize(
             TypedValue.COMPLEX_UNIT_PX,
-            context.resources.getDimension(
-                if (isAiMessage) R.dimen.ai_response_text_size else R.dimen.default_message_text_size,
-            ),
+            context.resources.getDimension(R.dimen.default_message_text_size),
         )
 
         // Superseded styling
