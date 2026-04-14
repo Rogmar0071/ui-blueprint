@@ -1386,7 +1386,7 @@ def rename_artifact(
 
     raw_name = str((body or {}).get("display_name", "")).strip()
     if not raw_name:
-        raise HTTPException(status_code=422, detail="display_name must not be blank")
+        raise HTTPException(status_code=422, detail="display_name must not be blank or whitespace")
     if len(raw_name) > _ARTIFACT_DISPLAY_NAME_MAX_LEN:
         raise HTTPException(
             status_code=422,

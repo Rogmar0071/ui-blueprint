@@ -1034,7 +1034,7 @@ class FolderDetailActivity : AppCompatActivity() {
         } else {
             parts += "uploaded"
         }
-        parts += "$artifactCount files"
+        parts += if (artifactCount == 1) "1 file" else "$artifactCount files"
         createdAt.substringBefore("T").takeIf { it.isNotBlank() }?.let(parts::add)
         return parts.joinToString(" • ")
     }
@@ -1180,7 +1180,7 @@ class FolderDetailActivity : AppCompatActivity() {
                 UploadGroupItem(
                     id = "project-files",
                     title = getString(R.string.label_project_files),
-                    subtitle = "${projectArtifacts.size} files",
+                    subtitle = if (projectArtifacts.size == 1) "1 file" else "${projectArtifacts.size} files",
                     clipArtifact = null,
                     relatedArtifacts = projectArtifacts,
                 ),
