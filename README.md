@@ -1,9 +1,10 @@
 # RecoB
 
-## Evidence-only query system
+## Evidence AI prototype
 
-This repository now also includes a strict evidence-only query pipeline under the
-top-level `app/`, `interface/`, `prompts/`, `data/`, and `run.py` files.
+This repository now also includes an Evidence AI prototype under the top-level
+`app/`, `interface/`, `prompts/`, `data/`, and `run.py` files, alongside the
+existing blueprint tooling below.
 
 ### Purpose
 
