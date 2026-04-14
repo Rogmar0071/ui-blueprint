@@ -1093,6 +1093,59 @@ class TestJobs:
         assert body["job"]["type"] == "analyze"
         assert body["job"]["status"] == "queued"
 
+    def test_create_analyze_job_falls_back_to_repo_analysis_when_only_repo_zip_exists(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import backend.app.worker as worker
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+        artifact_id = _seed_artifact(fid, None, "repo_zip", display_name="Repository 1")
+        enqueue_calls: list[tuple[str, str]] = []
+
+        def _record_enqueue(job_id: str, job_type: str) -> str:
+            enqueue_calls.append((job_id, job_type))
+            return "rq-repo-job"
+
+        monkeypatch.setattr(worker, "enqueue_job", _record_enqueue)
+
+        resp = client.post(
+            f"/v1/folders/{fid}/jobs",
+            json={"type": "analyze"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["job"]["type"] == "analyze_repo"
+        assert body["job"]["source_artifact_id"] == artifact_id
+        assert body["job"]["rq_job_id"] == "rq-repo-job"
+        assert enqueue_calls == [(body["job"]["id"], "analyze_repo")]
+
+    def test_create_analyze_job_repo_fallback_is_idempotent(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import backend.app.worker as worker
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+        _seed_artifact(fid, None, "repo_zip", display_name="Repository 1")
+        enqueue_calls: list[tuple[str, str]] = []
+
+        def _record_enqueue(job_id: str, job_type: str) -> str:
+            enqueue_calls.append((job_id, job_type))
+            return f"rq-{len(enqueue_calls)}"
+
+        monkeypatch.setattr(worker, "enqueue_job", _record_enqueue)
+
+        resp1 = client.post(f"/v1/folders/{fid}/jobs", json={"type": "analyze"}, headers=_auth())
+        resp2 = client.post(f"/v1/folders/{fid}/jobs", json={"type": "analyze"}, headers=_auth())
+
+        assert resp1.status_code == 202, resp1.text
+        assert resp2.status_code == 202, resp2.text
+        assert resp1.json()["job"]["id"] == resp2.json()["job"]["id"]
+        assert resp1.json()["job"]["type"] == "analyze_repo"
+        assert len(enqueue_calls) == 1
+
     def test_create_blueprint_job(self, client: TestClient) -> None:
         folder = _create_folder(client)
         fid = folder["id"]

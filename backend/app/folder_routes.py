@@ -265,6 +265,19 @@ def _artifact_for_object_key(db, folder_id: uuid.UUID, object_key: str):
     ).first()
 
 
+def _latest_artifact_for_type(db, folder_id: uuid.UUID, artifact_type: str):
+    from sqlmodel import select
+
+    from backend.app.models import Artifact
+
+    return db.exec(
+        select(Artifact)
+        .where(Artifact.folder_id == folder_id)
+        .where(Artifact.type == artifact_type)
+        .order_by(Artifact.created_at.desc())
+    ).first()
+
+
 def _persist_repo_upload(db, folder_id: uuid.UUID, local_path: str):
     """Upload a repo ZIP file and create its artifact row."""
     from backend.app import storage
@@ -2091,6 +2104,25 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
 
     # Run watchdog before the dedupe check so stalled jobs are cleared first.
     _mark_stalled_jobs(db, fid)
+
+    if job_type == "analyze" and not folder.clip_object_key:
+        repo_artifact = _latest_artifact_for_type(db, fid, "repo_zip")
+        if repo_artifact is not None:
+            job, deduped = _enqueue_repo_analysis_job(db, fid, repo_artifact.id)
+            log_event(
+                source="backend",
+                level="info",
+                event_type="repo.analysis.enqueued" if not deduped else "repo.analysis.deduped",
+                message=(
+                    "Repo analysis "
+                    f"{'deduped' if deduped else 'enqueued'} for artifact {repo_artifact.id} "
+                    "via POST /jobs analyze fallback"
+                ),
+                folder_id=str(fid),
+                job_id=str(job.id),
+                artifact_id=str(repo_artifact.id),
+            )
+            return JSONResponse(content={"job": _job_dict(job)}, status_code=202)
 
     # Idempotency: deduplicate active analyze/analyze_optional jobs.
     if job_type in ("analyze", "analyze_optional"):
