@@ -95,6 +95,8 @@
     <string name="hint_reply_folder">Message…</string>
     <string name="hint_reply_main">Message UI Blueprint…</string>
     <string name="btn_search">Search</string>
+    <string name="action_maximize_resource">Maximize resource window</string>
+    <string name="action_minimize_resource">Minimize resource window</string>
     <!-- Expandable section labels -->
     <string name="label_supporting_data">Supporting data</string>
     <!-- Analyze bottom sheet -->
