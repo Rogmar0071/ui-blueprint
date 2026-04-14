@@ -36,8 +36,19 @@ exposes the results over HTTP.
 | `DELETE` | `/v1/folders/{id}` | Delete folder (cascade) |
 | `POST` | `/v1/folders/{id}/clip` | Upload clip to folder (creates analyze job) |
 | `POST` | `/v1/folders/{id}/audio` | Upload audio file to folder |
-| `POST` | `/v1/folders/{id}/repo` | Upload repo ZIP → structural analysis job |
+| `POST` | `/v1/folders/{id}/repo` | Upload repo ZIP (stored, analysis triggered separately) |
+| `POST` | `/v1/folders/{id}/repo/chunks/start` | Start a chunked repo ZIP upload session |
+| `POST` | `/v1/folders/{id}/repo/chunks` | Upload one repo ZIP chunk |
+| `PUT` | `/v1/folders/{id}/repo/chunks/{upload_id}/finalize` | Finalize a chunked repo ZIP upload |
+| `DELETE` | `/v1/folders/{id}/repo/chunks/{upload_id}` | Cancel a chunked repo ZIP upload |
+| `POST` | `/v1/folders/{id}/folder-uploads/start` | Start a chunked folder-archive upload session |
+| `POST` | `/v1/folders/{id}/folder-uploads/chunks` | Upload one folder-archive chunk |
+| `PUT` | `/v1/folders/{id}/folder-uploads/{upload_id}/finalize` | Finalize a chunked folder upload |
+| `DELETE` | `/v1/folders/{id}/folder-uploads/{upload_id}` | Cancel a chunked folder upload |
 | `GET`  | `/v1/folders/{id}/artifacts/{artifact_id}` | Presigned download URL for artifact |
+| `GET`  | `/v1/folders/{id}/artifacts/{artifact_id}/url` | JSON download URL payload for artifact |
+| `POST` | `/v1/folders/{id}/artifacts/{artifact_id}/analyze` | Mark a repo ZIP upload for structural analysis |
+| `DELETE` | `/v1/folders/{id}/artifacts/{artifact_id}` | Delete an uploaded/derived artifact |
 | `POST` | `/v1/folders/{id}/messages` | Send a chat message (AI replies, persisted) |
 | `GET`  | `/v1/folders/{id}/messages` | List folder chat history |
 | `POST` | `/v1/folders/{id}/jobs` | Enqueue a job (`analyze`, `analyze_optional`, or `blueprint`) |
@@ -46,6 +57,15 @@ exposes the results over HTTP.
 
 Auth-required endpoints need `Authorization: Bearer <API_KEY>` header.
 When `API_KEY` is not set, all requests are allowed (dev / open mode).
+
+---
+
+## Chunked repo ZIP + folder uploads
+
+- Repo ZIP uploads can be started with `/repo/chunks/start`, uploaded in chunks, and finalized later.
+- Folder uploads are packaged on the client as a virtual ZIP archive, then sent through `/folder-uploads/*` while preserving relative paths inside the archive.
+- Uploading a repo ZIP no longer auto-enqueues `analyze_repo`; the user explicitly marks the stored upload for analysis via `POST /artifacts/{artifact_id}/analyze`.
+- Chunk size defaults to **5 MB** and retry count defaults to **3** unless overridden by client settings / environment.
 
 ---
 

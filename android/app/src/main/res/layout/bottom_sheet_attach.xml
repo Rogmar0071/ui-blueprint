@@ -124,7 +124,7 @@
 
     </LinearLayout>
 
-    <!-- Row 2: Video + Repo ZIP (shown only in FolderDetailActivity) -->
+    <!-- Row 2: Video + Repo ZIP + Folder upload (shown only in FolderDetailActivity) -->
     <LinearLayout
         android:id="@+id/rowAttach2"
         android:layout_width="match_parent"
@@ -186,8 +186,31 @@
                 android:layout_marginTop="4dp" />
         </LinearLayout>
 
-        <!-- Spacer 1 -->
-        <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
+        <!-- Folder upload -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center">
+            <ImageButton
+                android:id="@+id/btnAttachFolderUpload"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_circle_btn"
+                android:src="@android:drawable/ic_menu_upload"
+                android:scaleType="center"
+                android:contentDescription="@string/attach_folder_upload" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/attach_folder_upload"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:textColor="@color/text_secondary"
+                android:layout_marginTop="4dp" />
+        </LinearLayout>
+
         <!-- Spacer 2 -->
         <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
 

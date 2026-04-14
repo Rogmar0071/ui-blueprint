@@ -89,7 +89,7 @@ object ArtifactViewerRouter {
             }
             return
         }
-        if (type.startsWith("repo_zip")) {
+        if (type.startsWith("repo_zip") || type.startsWith("folder_upload_zip")) {
             // Repo ZIP: offer download URL — open with ACTION_VIEW as octet-stream
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(Uri.parse(url), "application/zip")

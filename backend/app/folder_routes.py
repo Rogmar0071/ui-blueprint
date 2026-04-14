@@ -211,6 +211,7 @@ def _build_upload_identity(
         "clip": "Clip",
         "audio_m4a": "Audio",
         "repo_zip": "Repository",
+        "folder_upload_zip": "Folder",
     }.get(artifact_type, "Upload")
     sequence = _next_upload_sequence(db, folder_id, artifact_type)
     filename_stem = label.lower().replace(" ", "_")
@@ -236,9 +237,9 @@ def _artifact_for_object_key(db, folder_id: uuid.UUID, object_key: str):
 
 
 def _persist_repo_upload(db, folder_id: uuid.UUID, local_path: str):
-    """Upload a repo ZIP file, create its artifact row, and enqueue analyze_repo."""
-    from backend.app import storage, worker
-    from backend.app.models import Artifact, Job
+    """Upload a repo ZIP file and create its artifact row."""
+    from backend.app import storage
+    from backend.app.models import Artifact
 
     display_name, storage_filename = _build_upload_identity(db, folder_id, "repo_zip", ".zip")
     key = storage.upload_file(str(folder_id), storage_filename, local_path, "application/zip")
@@ -253,7 +254,50 @@ def _persist_repo_upload(db, folder_id: uuid.UUID, local_path: str):
     db.commit()
     db.refresh(artifact)
 
-    job = Job(folder_id=folder_id, type="analyze_repo", source_artifact_id=artifact.id)
+    return artifact, key
+
+
+def _persist_folder_upload(db, folder_id: uuid.UUID, local_path: str):
+    """Upload a folder archive and create its artifact row."""
+    from backend.app import storage
+    from backend.app.models import Artifact
+
+    display_name, storage_filename = _build_upload_identity(
+        db, folder_id, "folder_upload_zip", ".zip"
+    )
+    key = storage.upload_file(str(folder_id), storage_filename, local_path, "application/zip")
+
+    artifact = Artifact(
+        folder_id=folder_id,
+        type="folder_upload_zip",
+        object_key=key,
+        display_name=display_name,
+    )
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+    return artifact, key
+
+
+def _enqueue_repo_analysis_job(db, folder_id: uuid.UUID, artifact_id: uuid.UUID):
+    """Create and enqueue an analyze_repo job anchored to a repo_zip artifact."""
+    from sqlmodel import select
+
+    from backend.app import worker
+    from backend.app.models import Job
+
+    existing = db.exec(
+        select(Job)
+        .where(Job.folder_id == folder_id)
+        .where(Job.type == "analyze_repo")
+        .where(Job.source_artifact_id == artifact_id)
+        .where(Job.status.in_(["queued", "running"]))
+        .order_by(Job.created_at.asc())
+    ).first()
+    if existing is not None:
+        return existing, True
+
+    job = Job(folder_id=folder_id, type="analyze_repo", source_artifact_id=artifact_id)
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -266,7 +310,7 @@ def _persist_repo_upload(db, folder_id: uuid.UUID, local_path: str):
         db.commit()
         db.refresh(job)
 
-    return artifact, job, key
+    return job, False
 
 
 def _find_active_analyze_job(db, folder_id: uuid.UUID):
@@ -833,12 +877,13 @@ async def upload_repo(
     db=Depends(_db_session),
 ) -> JSONResponse:
     """
-    Accept a .zip repository upload, store it in R2, create an Artifact record
-    (type='repo_zip'), and enqueue an 'analyze_repo' job.
+    Accept a .zip repository upload, store it in R2, and create an Artifact
+    record (type='repo_zip').
 
-    Returns 202 Accepted with the created job info.
+    Returns 202 Accepted with the created artifact info. Analysis is triggered
+    separately once the user marks the upload for analysis.
     """
-    from backend.app import storage
+    from backend.app import repo_chunking, storage
 
     fid = _parse_uuid(folder_id, "folder_id")
     _folder_or_404(db, fid)
@@ -846,7 +891,10 @@ async def upload_repo(
     if not storage.storage_available():
         raise HTTPException(status_code=502, detail="Storage not configured")
 
-    MAX_REPO_ZIP_BYTES = int(os.environ.get("MAX_REPO_ZIP_BYTES", 200 * 1024 * 1024))
+    if not repo_chunking.is_repo_zip_upload(repo.filename or "repo.zip", repo.content_type):
+        raise HTTPException(status_code=415, detail="Repo upload must be a .zip file")
+
+    max_repo_zip_bytes = int(os.environ.get("MAX_REPO_ZIP_BYTES", 200 * 1024 * 1024))
     _CHUNK_SIZE = 1024 * 1024  # 1 MB
 
     tmp_path: str | None = None
@@ -859,15 +907,15 @@ async def upload_repo(
                 if not chunk:
                     break
                 total_bytes += len(chunk)
-                if total_bytes > MAX_REPO_ZIP_BYTES:
-                    limit_mb = MAX_REPO_ZIP_BYTES // (1024 * 1024)
+                if total_bytes > max_repo_zip_bytes:
+                    limit_mb = max_repo_zip_bytes // (1024 * 1024)
                     raise HTTPException(
                         status_code=413,
                         detail=f"Repo ZIP exceeds maximum allowed size of {limit_mb} MB",
                     )
                 tmp.write(chunk)
 
-        artifact, job, key = _persist_repo_upload(db, fid, tmp_path)
+        artifact, key = _persist_repo_upload(db, fid, tmp_path)
     finally:
         if tmp_path is not None:
             try:
@@ -879,16 +927,16 @@ async def upload_repo(
         source="backend",
         level="info",
         event_type="repo.upload.succeeded",
-        message=f"Repo upload succeeded for folder {fid}, job {job.id} enqueued",
+        message=f"Repo upload succeeded for folder {fid}, artifact {artifact.id} stored",
         folder_id=str(fid),
-        job_id=str(job.id),
+        artifact_id=str(artifact.id),
         details_json={"repo_object_key": key},
     )
 
     return JSONResponse(
         content={
             "folder_id": folder_id,
-            "job": _job_dict(job),
+            "artifact": _artifact_dict(artifact),
             "repo_object_key": key,
             "chunking": {
                 "enabled": False,
@@ -897,6 +945,61 @@ async def upload_repo(
             },
         },
         status_code=202,
+    )
+
+
+@router.post(
+    "/{folder_id}/repo/chunks/start",
+    status_code=201,
+    dependencies=[Depends(require_auth)],
+)
+def start_repo_chunk_upload(
+    folder_id: str,
+    body: dict[str, Any],
+    db=Depends(_db_session),
+) -> JSONResponse:
+    from backend.app import repo_chunking, storage
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    _folder_or_404(db, fid)
+
+    if not storage.storage_available():
+        raise HTTPException(status_code=502, detail="Storage not configured")
+
+    file_name = str(body.get("file_name", "repo.zip")).strip() or "repo.zip"
+    content_type = str(body.get("content_type", "application/zip")).strip() or "application/zip"
+    total_bytes = int(body.get("total_bytes", 0))
+    requested_chunk_size = int(
+        body.get("chunk_size_bytes", repo_chunking.default_chunk_size_bytes())
+    )
+    if not repo_chunking.is_repo_zip_upload(file_name, content_type):
+        raise HTTPException(status_code=415, detail="Repo upload must be a .zip file")
+
+    max_repo_zip_bytes = int(os.environ.get("MAX_REPO_ZIP_BYTES", 200 * 1024 * 1024))
+    if total_bytes > max_repo_zip_bytes:
+        limit_mb = max_repo_zip_bytes // (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"Repo ZIP exceeds maximum allowed size of {limit_mb} MB",
+        )
+
+    manifest = repo_chunking.start_upload(
+        folder_id=folder_id,
+        file_name=file_name,
+        content_type=content_type,
+        total_bytes=total_bytes,
+        chunk_size_bytes=requested_chunk_size,
+    )
+    retry_count = int(os.environ.get("REPO_ZIP_UPLOAD_RETRY_COUNT", "3"))
+    return JSONResponse(
+        content={
+            "upload_id": manifest["upload_id"],
+            "chunk_size_bytes": manifest["chunk_size_bytes"],
+            "total_bytes": manifest["total_bytes"],
+            "total_chunks": manifest["total_chunks"],
+            "retry_count": max(0, retry_count),
+        },
+        status_code=201,
     )
 
 
@@ -910,6 +1013,7 @@ async def upload_repo_chunk(
     x_chunk_size: int = Header(..., alias="X-Chunk-Size"),
     x_total_bytes: int = Header(..., alias="X-Total-Bytes"),
     x_file_name: str = Header(default="repo.zip", alias="X-File-Name"),
+    content_range: str | None = Header(default=None, alias="Content-Range"),
     db=Depends(_db_session),
 ) -> JSONResponse:
     from backend.app import repo_chunking, storage
@@ -929,10 +1033,24 @@ async def upload_repo_chunk(
         )
 
     content_type = (chunk.content_type or "application/zip").lower()
-    if "zip" not in content_type and not x_file_name.lower().endswith(".zip"):
+    if not repo_chunking.is_repo_zip_upload(x_file_name, content_type):
         raise HTTPException(status_code=415, detail="Repo upload must be a .zip file")
 
     chunk_bytes = await chunk.read()
+    if content_range is not None:
+        range_start, range_end, range_total = repo_chunking.parse_content_range(content_range)
+        expected_start = x_chunk_index * x_chunk_size
+        expected_end = expected_start + len(chunk_bytes) - 1
+        if (
+            range_total != x_total_bytes
+            or range_start != expected_start
+            or range_end != expected_end
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Content-Range does not match chunk metadata",
+            )
+
     manifest = repo_chunking.write_chunk(
         x_upload_id,
         folder_id=folder_id,
@@ -955,6 +1073,29 @@ async def upload_repo_chunk(
         },
         status_code=202,
     )
+
+
+@router.delete(
+    "/{folder_id}/repo/chunks/{upload_id}",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def cancel_repo_chunk_upload(
+    folder_id: str,
+    upload_id: str,
+    db=Depends(_db_session),
+) -> JSONResponse:
+    from backend.app import repo_chunking
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    _folder_or_404(db, fid)
+
+    manifest = repo_chunking.load_manifest(upload_id)
+    if manifest.get("folder_id") != folder_id:
+        raise HTTPException(status_code=404, detail="Upload not found for folder")
+
+    repo_chunking.cleanup(upload_id)
+    return JSONResponse(content={"upload_id": upload_id, "status": "cancelled"})
 
 
 @router.put(
@@ -983,7 +1124,7 @@ async def finalize_repo_chunk_upload(
     tmp_path: str | None = None
     try:
         manifest, tmp_path = repo_chunking.merge_chunks(upload_id, max_repo_zip_bytes)
-        artifact, job, key = _persist_repo_upload(db, fid, tmp_path)
+        artifact, key = _persist_repo_upload(db, fid, tmp_path)
     finally:
         if tmp_path is not None:
             try:
@@ -996,9 +1137,8 @@ async def finalize_repo_chunk_upload(
         source="backend",
         level="info",
         event_type="repo.upload.chunked.finalized",
-        message=f"Chunked repo upload finalized for folder {fid}, job {job.id} enqueued",
+        message=f"Chunked repo upload finalized for folder {fid}, artifact {artifact.id} stored",
         folder_id=str(fid),
-        job_id=str(job.id),
         artifact_id=str(artifact.id),
         details_json={
             "repo_object_key": key,
@@ -1011,7 +1151,7 @@ async def finalize_repo_chunk_upload(
     return JSONResponse(
         content={
             "folder_id": folder_id,
-            "job": _job_dict(job),
+            "artifact": _artifact_dict(artifact),
             "repo_object_key": key,
             "chunking": {
                 "enabled": True,
@@ -1023,6 +1163,217 @@ async def finalize_repo_chunk_upload(
         },
         status_code=202,
     )
+
+
+# ---------------------------------------------------------------------------
+# Chunked folder archive uploads
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{folder_id}/folder-uploads/start",
+    status_code=201,
+    dependencies=[Depends(require_auth)],
+)
+def start_folder_upload(
+    folder_id: str,
+    body: dict[str, Any],
+    db=Depends(_db_session),
+) -> JSONResponse:
+    from backend.app import repo_chunking, storage
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    _folder_or_404(db, fid)
+
+    if not storage.storage_available():
+        raise HTTPException(status_code=502, detail="Storage not configured")
+
+    folder_name = str(body.get("folder_name", "")).strip() or "folder-upload"
+    total_bytes = int(body.get("total_bytes", 0))
+    total_files = int(body.get("total_files", 0))
+    requested_chunk_size = int(
+        body.get("chunk_size_bytes", repo_chunking.default_chunk_size_bytes())
+    )
+    if total_files < 1:
+        raise HTTPException(status_code=400, detail="total_files must be at least 1")
+
+    max_folder_upload_bytes = int(os.environ.get("MAX_FOLDER_UPLOAD_BYTES", 500 * 1024 * 1024))
+    if total_bytes > max_folder_upload_bytes:
+        limit_mb = max_folder_upload_bytes // (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"Folder upload exceeds maximum allowed size of {limit_mb} MB",
+        )
+
+    manifest = repo_chunking.start_upload(
+        folder_id=folder_id,
+        file_name=f"{folder_name}.zip",
+        content_type="application/zip",
+        total_bytes=total_bytes,
+        chunk_size_bytes=requested_chunk_size,
+    )
+    manifest["folder_name"] = folder_name
+    manifest["total_files"] = total_files
+    manifest["structure"] = body.get("structure")
+    repo_chunking.save_manifest(manifest["upload_id"], manifest)
+
+    retry_count = int(os.environ.get("REPO_ZIP_UPLOAD_RETRY_COUNT", "3"))
+    return JSONResponse(
+        content={
+            "upload_id": manifest["upload_id"],
+            "chunk_size_bytes": manifest["chunk_size_bytes"],
+            "total_chunks": manifest["total_chunks"],
+            "total_bytes": manifest["total_bytes"],
+            "total_files": total_files,
+            "retry_count": max(0, retry_count),
+        },
+        status_code=201,
+    )
+
+
+@router.post(
+    "/{folder_id}/folder-uploads/chunks",
+    status_code=202,
+    dependencies=[Depends(require_auth)],
+)
+async def upload_folder_chunk(
+    folder_id: str,
+    chunk: UploadFile,
+    x_upload_id: str = Header(..., alias="X-Upload-Id"),
+    content_range: str = Header(..., alias="Content-Range"),
+    db=Depends(_db_session),
+) -> JSONResponse:
+    from backend.app import repo_chunking, storage
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    _folder_or_404(db, fid)
+
+    if not storage.storage_available():
+        raise HTTPException(status_code=502, detail="Storage not configured")
+
+    manifest = repo_chunking.load_manifest(x_upload_id)
+    if manifest.get("folder_id") != folder_id:
+        raise HTTPException(status_code=404, detail="Upload not found for folder")
+
+    range_start, range_end, range_total = repo_chunking.parse_content_range(content_range)
+    if range_total != int(manifest["total_bytes"]):
+        raise HTTPException(status_code=400, detail="Content-Range total does not match upload")
+
+    chunk_bytes = await chunk.read()
+    chunk_size_bytes = int(manifest["chunk_size_bytes"])
+    chunk_index = range_start // chunk_size_bytes
+    expected_end = range_start + len(chunk_bytes) - 1
+    if range_start % chunk_size_bytes != 0 or range_end != expected_end:
+        raise HTTPException(status_code=400, detail="Content-Range does not match chunk payload")
+
+    updated_manifest = repo_chunking.write_chunk(
+        x_upload_id,
+        folder_id=folder_id,
+        file_name=str(manifest["file_name"]),
+        content_type="application/zip",
+        chunk_index=chunk_index,
+        total_chunks=int(manifest["total_chunks"]),
+        chunk_size_bytes=chunk_size_bytes,
+        total_bytes=int(manifest["total_bytes"]),
+        data=chunk_bytes,
+    )
+    return JSONResponse(
+        content={
+            "upload_id": x_upload_id,
+            "chunk_index": chunk_index,
+            "chunks_received": updated_manifest["chunks_received"],
+            "total_chunks": updated_manifest["total_chunks"],
+            "complete": updated_manifest["complete"],
+        },
+        status_code=202,
+    )
+
+
+@router.put(
+    "/{folder_id}/folder-uploads/{upload_id}/finalize",
+    status_code=202,
+    dependencies=[Depends(require_auth)],
+)
+async def finalize_folder_upload(
+    folder_id: str,
+    upload_id: str,
+    db=Depends(_db_session),
+) -> JSONResponse:
+    from backend.app import repo_chunking, storage
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    _folder_or_404(db, fid)
+
+    if not storage.storage_available():
+        raise HTTPException(status_code=502, detail="Storage not configured")
+
+    manifest = repo_chunking.load_manifest(upload_id)
+    if manifest.get("folder_id") != folder_id:
+        raise HTTPException(status_code=404, detail="Upload not found for folder")
+
+    max_folder_upload_bytes = int(os.environ.get("MAX_FOLDER_UPLOAD_BYTES", 500 * 1024 * 1024))
+    tmp_path: str | None = None
+    try:
+        manifest, tmp_path = repo_chunking.merge_chunks(upload_id, max_folder_upload_bytes)
+        artifact, key = _persist_folder_upload(db, fid, tmp_path)
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except Exception:  # noqa: BLE001
+                pass
+
+    repo_chunking.cleanup(upload_id)
+    log_event(
+        source="backend",
+        level="info",
+        event_type="folder.upload.finalized",
+        message=f"Folder upload finalized for folder {fid}, artifact {artifact.id} stored",
+        folder_id=str(fid),
+        artifact_id=str(artifact.id),
+        details_json={
+            "folder_upload_object_key": key,
+            "upload_id": upload_id,
+            "total_chunks": manifest["total_chunks"],
+            "total_bytes": manifest["total_bytes"],
+            "total_files": manifest.get("total_files"),
+        },
+    )
+    return JSONResponse(
+        content={
+            "folder_id": folder_id,
+            "artifact": _artifact_dict(artifact),
+            "folder_upload_object_key": key,
+            "chunking": {
+                "enabled": True,
+                "upload_id": upload_id,
+                "chunk_size_bytes": manifest["chunk_size_bytes"],
+                "total_chunks": manifest["total_chunks"],
+                "total_bytes": manifest["total_bytes"],
+                "total_files": manifest.get("total_files"),
+            },
+        },
+        status_code=202,
+    )
+
+
+@router.delete(
+    "/{folder_id}/folder-uploads/{upload_id}",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def cancel_folder_upload(folder_id: str, upload_id: str, db=Depends(_db_session)) -> JSONResponse:
+    from backend.app import repo_chunking
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    _folder_or_404(db, fid)
+
+    manifest = repo_chunking.load_manifest(upload_id)
+    if manifest.get("folder_id") != folder_id:
+        raise HTTPException(status_code=404, detail="Upload not found for folder")
+
+    repo_chunking.cleanup(upload_id)
+    return JSONResponse(content={"upload_id": upload_id, "status": "cancelled"})
 
 
 # ---------------------------------------------------------------------------
@@ -1097,6 +1448,129 @@ def get_artifact_url(
         raise HTTPException(status_code=502, detail="Could not generate download URL") from exc
 
     return JSONResponse(content={"url": url, "artifact": _artifact_dict(artifact)})
+
+
+@router.post(
+    "/{folder_id}/artifacts/{artifact_id}/analyze",
+    status_code=202,
+    dependencies=[Depends(require_auth)],
+)
+def analyze_artifact(folder_id: str, artifact_id: str, db=Depends(_db_session)) -> JSONResponse:
+    """Mark an uploaded artifact for analysis and enqueue the matching job."""
+    from backend.app.models import Artifact
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    aid = _parse_uuid(artifact_id, "artifact_id")
+    _folder_or_404(db, fid)
+
+    artifact = db.get(Artifact, aid)
+    if artifact is None or artifact.folder_id != fid:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if artifact.type != "repo_zip":
+        raise HTTPException(status_code=400, detail="Only repo ZIP uploads can be analyzed here")
+
+    job, deduped = _enqueue_repo_analysis_job(db, fid, artifact.id)
+    log_event(
+        source="backend",
+        level="info",
+        event_type="repo.analysis.enqueued" if not deduped else "repo.analysis.deduped",
+        message=(
+            f"Repo analysis {'deduped' if deduped else 'enqueued'} for artifact {artifact.id}"
+        ),
+        folder_id=str(fid),
+        job_id=str(job.id),
+        artifact_id=str(artifact.id),
+    )
+    return JSONResponse(content={"job": _job_dict(job), "deduped": deduped}, status_code=202)
+
+
+@router.delete(
+    "/{folder_id}/artifacts/{artifact_id}",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def delete_artifact(
+    folder_id: str,
+    artifact_id: str,
+    db=Depends(_db_session),
+) -> JSONResponse:
+    """Delete an artifact and any completed derived artifacts anchored to it."""
+    import botocore.exceptions
+    from sqlmodel import select
+
+    from backend.app import storage
+    from backend.app.models import Artifact, Job
+
+    fid = _parse_uuid(folder_id, "folder_id")
+    aid = _parse_uuid(artifact_id, "artifact_id")
+    _folder_or_404(db, fid)
+
+    artifact = db.get(Artifact, aid)
+    if artifact is None or artifact.folder_id != fid:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    linked_jobs = db.exec(
+        select(Job)
+        .where(Job.folder_id == fid)
+        .where(Job.source_artifact_id == artifact.id)
+        .order_by(Job.created_at.desc())
+    ).all()
+    active_job = next((job for job in linked_jobs if job.status in ("queued", "running")), None)
+    if active_job is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot delete artifact while linked job '{active_job.type}' is "
+                f"{active_job.status}. Cancel it first."
+            ),
+        )
+
+    derived_artifacts = db.exec(
+        select(Artifact)
+        .where(Artifact.folder_id == fid)
+        .where(Artifact.job_id.in_([job.id for job in linked_jobs] or [uuid.uuid4()]))
+    ).all()
+
+    to_delete = [artifact, *derived_artifacts]
+    deleted_artifact_ids: list[str] = []
+    deleted_job_ids: list[str] = []
+
+    if storage.storage_available():
+        for row in to_delete:
+            try:
+                storage.delete_object(row.object_key)
+            except (RuntimeError, OSError, botocore.exceptions.BotoCoreError):
+                logger.warning("Failed to delete storage object %s", row.object_key)
+
+    for row in derived_artifacts:
+        deleted_artifact_ids.append(str(row.id))
+        db.delete(row)
+    for job in linked_jobs:
+        deleted_job_ids.append(str(job.id))
+        db.delete(job)
+
+    deleted_artifact_ids.append(str(artifact.id))
+    db.delete(artifact)
+    db.commit()
+
+    log_event(
+        source="backend",
+        level="info",
+        event_type="artifacts.delete",
+        message=f"Artifact deleted: {artifact.id}",
+        folder_id=str(fid),
+        artifact_id=str(artifact.id),
+        details_json={
+            "deleted_artifact_ids": deleted_artifact_ids,
+            "deleted_job_ids": deleted_job_ids,
+        },
+    )
+    return JSONResponse(
+        content={
+            "deleted_artifact_ids": deleted_artifact_ids,
+            "deleted_job_ids": deleted_job_ids,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1403,7 +1877,7 @@ def list_messages(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
 # Stalled-job watchdog
 # ---------------------------------------------------------------------------
 
-_STALLED_JOB_TYPES = {"analyze", "blueprint"}
+_STALLED_JOB_TYPES = {"analyze", "analyze_repo", "blueprint"}
 
 # Maximum seconds a job may remain in "running" state before being declared
 # stalled.  Configurable via MAX_JOB_RUNTIME_SECONDS env var (default 900 = 15 min).

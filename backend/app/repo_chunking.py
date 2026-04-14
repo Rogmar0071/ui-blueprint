@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import uuid
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 from fastapi import HTTPException
 
 _DEFAULT_CHUNK_SIZE_BYTES = 5 * 1024 * 1024
+_CONTENT_RANGE_RE = re.compile(r"^bytes (?P<start>\d+)-(?P<end>\d+)/(?P<total>\d+)$")
 _DEFAULT_UPLOADS_ROOT = (
     Path(os.environ.get("DATA_DIR", "/tmp/ui_blueprint_data")) / "repo_zip_uploads"
 )
@@ -25,6 +27,30 @@ def default_chunk_size_bytes() -> int:
     except ValueError:
         return _DEFAULT_CHUNK_SIZE_BYTES
     return max(1, value)
+
+
+def is_repo_zip_upload(file_name: str, content_type: str | None) -> bool:
+    """Return True when the supplied upload metadata clearly identifies a repo ZIP."""
+    normalized_name = file_name.strip().lower()
+    normalized_type = (content_type or "").strip().lower()
+    return normalized_name.endswith(".zip") or normalized_type in {
+        "application/zip",
+        "application/x-zip-compressed",
+    }
+
+
+def parse_content_range(value: str) -> tuple[int, int, int]:
+    """Parse a Content-Range header of the form ``bytes start-end/total``."""
+    match = _CONTENT_RANGE_RE.match(value.strip())
+    if match is None:
+        raise HTTPException(status_code=400, detail="Invalid Content-Range header")
+
+    start = int(match.group("start"))
+    end = int(match.group("end"))
+    total = int(match.group("total"))
+    if start < 0 or end < start or total < 1 or end >= total:
+        raise HTTPException(status_code=400, detail="Invalid Content-Range header")
+    return start, end, total
 
 
 def _validated_upload_id(upload_id: str) -> str:
@@ -74,11 +100,46 @@ def _write_manifest(upload_id: str, manifest: dict[str, Any]) -> None:
         json.dump(manifest, handle, sort_keys=True)
 
 
+def save_manifest(upload_id: str, manifest: dict[str, Any]) -> None:
+    """Persist a validated manifest update for an existing upload session."""
+    _write_manifest(upload_id, manifest)
+
+
 def _write_chunk_bytes(chunk_dir: Path, chunk_index: int, data: bytes) -> None:
     """Write one chunk beneath a previously validated directory using a fixed filename."""
     chunk_path = chunk_dir / f"chunk_{chunk_index:05d}"
     with chunk_path.open("wb") as handle:
         handle.write(data)
+
+
+def start_upload(
+    *,
+    folder_id: str,
+    file_name: str,
+    content_type: str,
+    total_bytes: int,
+    chunk_size_bytes: int,
+) -> dict[str, Any]:
+    """Create an empty chunk manifest and return its upload metadata."""
+    if total_bytes < 1:
+        raise HTTPException(status_code=400, detail="Invalid total_bytes")
+    if chunk_size_bytes < 1:
+        raise HTTPException(status_code=400, detail="Invalid chunk_size_bytes")
+
+    upload_id = str(uuid.uuid4())
+    total_chunks = (total_bytes + chunk_size_bytes - 1) // chunk_size_bytes
+    manifest = {
+        "upload_id": upload_id,
+        "folder_id": folder_id,
+        "file_name": file_name,
+        "content_type": content_type,
+        "chunk_size_bytes": chunk_size_bytes,
+        "total_bytes": total_bytes,
+        "total_chunks": total_chunks,
+        "received_chunks": [],
+    }
+    _write_manifest(upload_id, manifest)
+    return manifest
 
 
 def _validate_manifest_compatibility(

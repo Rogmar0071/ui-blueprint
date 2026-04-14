@@ -16,9 +16,13 @@ data class RepoZipChunk(
 object RepoZipTransferSettings {
     private const val PREFS_NAME = "repo_transfer_prefs"
     private const val PREF_REPO_ZIP_CHUNK_SIZE_MB = "repo_zip_chunk_size_mb"
+    private const val PREF_REPO_ZIP_RETRY_COUNT = "repo_zip_retry_count"
     private const val DEFAULT_CHUNK_SIZE_MB = 5
+    private const val DEFAULT_RETRY_COUNT = 3
     private const val MIN_CHUNK_SIZE_MB = 1
     private const val MAX_CHUNK_SIZE_MB = 64
+    private const val MIN_RETRY_COUNT = 0
+    private const val MAX_RETRY_COUNT = 6
 
     fun getChunkSizeBytes(context: Context): Long {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -26,8 +30,18 @@ object RepoZipTransferSettings {
         return sanitizeChunkSizeMb(configuredMb).toLong() * 1024L * 1024L
     }
 
+    fun getRetryCount(context: Context): Int {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val configuredValue = prefs.getInt(PREF_REPO_ZIP_RETRY_COUNT, DEFAULT_RETRY_COUNT)
+        return sanitizeRetryCount(configuredValue)
+    }
+
     internal fun sanitizeChunkSizeMb(value: Int): Int {
         return value.coerceIn(MIN_CHUNK_SIZE_MB, MAX_CHUNK_SIZE_MB)
+    }
+
+    internal fun sanitizeRetryCount(value: Int): Int {
+        return value.coerceIn(MIN_RETRY_COUNT, MAX_RETRY_COUNT)
     }
 }
 
@@ -81,6 +95,12 @@ object RepoZipChunking {
             )
             currentIndex += 1
         }
+    }
+
+    fun buildContentRange(chunkIndex: Int, chunkSizeBytes: Long, chunkLength: Int, totalBytes: Long): String {
+        val start = chunkIndex * chunkSizeBytes
+        val end = start + chunkLength - 1
+        return "bytes $start-$end/$totalBytes"
     }
 
     fun resolveDisplayName(contentResolver: ContentResolver, uri: Uri): String {

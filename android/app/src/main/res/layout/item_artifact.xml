@@ -35,4 +35,14 @@
         android:textSize="12sp"
         android:textAllCaps="false" />
 
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnArtifactDelete"
+        style="@style/Widget.MaterialComponents.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:text="@string/dialog_btn_delete"
+        android:textColor="@color/destructive"
+        android:textSize="12sp"
+        android:textAllCaps="false" />
+
 </LinearLayout>

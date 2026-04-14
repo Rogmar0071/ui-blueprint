@@ -53,15 +53,18 @@ object BackendClient {
     @Throws(IOException::class)
     fun executeWithRetry(
         request: Request,
+        maxRetries: Int = MAX_RETRIES,
         onRetry: ((attempt: Int, total: Int) -> Unit)? = null,
     ): Response {
+        val safeMaxRetries = maxRetries.coerceAtLeast(0)
+        val maxAttempts = safeMaxRetries + 1
         var lastException: IOException? = null
-        for (attempt in 1..MAX_ATTEMPTS) {
+        for (attempt in 1..maxAttempts) {
             if (attempt > 1) {
                 // retryNumber is 1-based: 1 for the first retry, 2 for the second, etc.
                 val retryNumber = attempt - 1
-                val delay = BACKOFF_DELAYS_MS[retryNumber - 1]
-                onRetry?.invoke(retryNumber, MAX_RETRIES)
+                val delay = retryDelayMs(retryNumber)
+                onRetry?.invoke(retryNumber, safeMaxRetries)
                 try {
                     Thread.sleep(delay)
                 } catch (ie: InterruptedException) {
@@ -72,7 +75,7 @@ object BackendClient {
             try {
                 val response = httpClient.newCall(request).execute()
                 val isBodyless = request.body == null
-                if (isBodyless && response.code in RETRYABLE_STATUS_CODES && attempt < MAX_ATTEMPTS) {
+                if (isBodyless && response.code in RETRYABLE_STATUS_CODES && attempt < maxAttempts) {
                     // Close the unusable response body before retrying
                     response.close()
                     continue
@@ -80,10 +83,18 @@ object BackendClient {
                 return response
             } catch (e: IOException) {
                 lastException = e
-                if (attempt == MAX_ATTEMPTS) throw e
+                if (attempt == maxAttempts) throw e
             }
         }
         // Should be unreachable, but satisfies the compiler.
         throw lastException ?: IOException("Unknown network error")
+    }
+
+    private fun retryDelayMs(retryNumber: Int): Long {
+        if (retryNumber <= BACKOFF_DELAYS_MS.size) {
+            return BACKOFF_DELAYS_MS[retryNumber - 1]
+        }
+        val extraRetries = retryNumber - BACKOFF_DELAYS_MS.size
+        return BACKOFF_DELAYS_MS.last() * (1L shl extraRetries.coerceAtMost(10))
     }
 }

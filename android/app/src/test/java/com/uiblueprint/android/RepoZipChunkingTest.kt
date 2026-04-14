@@ -38,4 +38,16 @@ class RepoZipChunkingTest {
         assertEquals(5, RepoZipTransferSettings.sanitizeChunkSizeMb(5))
         assertEquals(64, RepoZipTransferSettings.sanitizeChunkSizeMb(128))
     }
+
+    @Test
+    fun `retry count setting is clamped to supported range`() {
+        assertEquals(0, RepoZipTransferSettings.sanitizeRetryCount(-1))
+        assertEquals(3, RepoZipTransferSettings.sanitizeRetryCount(3))
+        assertEquals(6, RepoZipTransferSettings.sanitizeRetryCount(99))
+    }
+
+    @Test
+    fun `content range is built from chunk metadata`() {
+        assertEquals("bytes 5-8/20", RepoZipChunking.buildContentRange(1, 5, 4, 20))
+    }
 }

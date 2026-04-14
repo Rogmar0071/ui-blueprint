@@ -144,15 +144,32 @@
     <!-- Repo ZIP upload -->
     <string name="btn_upload_repo">Upload Repo ZIP</string>
     <string name="attach_repo_zip">Repo ZIP</string>
+    <string name="attach_folder_upload">Folder</string>
     <string name="status_uploading_repo">Uploading repository…</string>
-    <string name="status_repo_upload_succeeded">Repository uploaded. Analysis queued.</string>
+    <string name="status_repo_upload_succeeded">Repository uploaded.</string>
     <string name="status_repo_upload_failed">Repository upload failed.</string>
     <string name="status_repo_upload_progress">Uploading repository… %1$d/%2$d chunks (%3$d%%)</string>
     <string name="status_repo_upload_finalizing">Finalizing repository upload…</string>
     <string name="status_repo_upload_retrying_single">Retrying repository upload (%1$d/%2$d)…</string>
     <string name="status_repo_upload_retrying_chunk">Retrying repository chunk %1$d/%2$d (%3$d/%4$d)…</string>
     <string name="status_repo_upload_retrying_finalize">Retrying repository finalize (%1$d/%2$d)…</string>
+    <string name="status_repo_analysis_queued">Repository analysis queued.</string>
+    <string name="label_repo_ready_for_analysis">ready for analysis</string>
+    <string name="status_uploading_folder">Uploading folder…</string>
+    <string name="status_folder_upload_succeeded">Folder uploaded.</string>
+    <string name="status_folder_upload_failed">Folder upload failed.</string>
+    <string name="status_folder_upload_preparing">Preparing folder archive…</string>
+    <string name="status_folder_upload_progress">Uploading folder… %1$d/%2$d chunks (%3$d%%)</string>
+    <string name="status_folder_upload_finalizing">Finalizing folder upload…</string>
+    <string name="status_folder_upload_retrying_chunk">Retrying folder chunk %1$d/%2$d (%3$d/%4$d)…</string>
+    <string name="status_folder_upload_retrying_finalize">Retrying folder finalize (%1$d/%2$d)…</string>
     <string name="toast_repo_analysis_queued">Structural analysis queued.</string>
+    <string name="toast_repo_upload_ready">Repository uploaded. Mark it for analysis when ready.</string>
+    <string name="toast_folder_upload_succeeded">Folder uploaded.</string>
+    <string name="dialog_delete_file_title">Delete file?</string>
+    <string name="dialog_delete_file_message">Delete %1$s and any linked generated files?</string>
+    <string name="error_delete_file_failed">Failed to delete file.</string>
+    <string name="error_repo_analysis_start_failed">Failed to start repository analysis.</string>
     <!-- Cancel / Re-upload analysis -->
     <string name="btn_cancel_analysis">Cancel Analysis</string>
     <string name="toast_analysis_cancelled">Analysis job cancelled.</string>

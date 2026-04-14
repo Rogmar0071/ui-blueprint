@@ -22,12 +22,14 @@ data class ArtifactItem(
 
 class ArtifactItemAdapter(
     private val onArtifactClick: (ArtifactItem) -> Unit,
+    private val onDeleteArtifact: (ArtifactItem) -> Unit,
 ) : ListAdapter<ArtifactItem, ArtifactItemAdapter.ViewHolder>(DIFF) {
 
     inner class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         val ivIcon: ImageView = itemView.findViewById(R.id.ivArtifactIcon)
         val tvType: TextView = itemView.findViewById(R.id.tvArtifactType)
         val btnView: MaterialButton = itemView.findViewById(R.id.btnArtifactView)
+        val btnDelete: MaterialButton = itemView.findViewById(R.id.btnArtifactDelete)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -54,6 +56,7 @@ class ArtifactItemAdapter(
         holder.ivIcon.setImageResource(iconRes)
 
         holder.btnView.setOnClickListener { onArtifactClick(item) }
+        holder.btnDelete.setOnClickListener { onDeleteArtifact(item) }
         holder.itemView.setOnClickListener { onArtifactClick(item) }
     }
 
@@ -72,6 +75,7 @@ class ArtifactItemAdapter(
                 "segments_manifest_json" -> "segments_manifest.json"
                 "repo_analysis_md" -> "repo_analysis.md"
                 "repo_structure_json" -> "repo_structure.json"
+                "folder_upload_zip" -> "folder_upload.zip"
                 else -> item.objectKey.substringAfterLast('/').ifBlank {
                     item.type.replace('_', ' ')
                 }

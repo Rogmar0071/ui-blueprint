@@ -56,6 +56,26 @@
             android:textSize="12sp" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnUploadAnalyze"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="@string/btn_analyze"
+            android:textAllCaps="false"
+            android:textColor="@color/text_primary"
+            android:textSize="12sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnUploadDelete"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="@string/dialog_btn_delete"
+            android:textAllCaps="false"
+            android:textColor="@color/destructive"
+            android:textSize="12sp" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/btnUploadToggle"
             style="@style/Widget.MaterialComponents.Button.TextButton"
             android:layout_width="wrap_content"
