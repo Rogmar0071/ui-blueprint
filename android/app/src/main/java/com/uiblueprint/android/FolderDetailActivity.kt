@@ -13,7 +13,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.provider.OpenableColumns
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.Menu
@@ -35,15 +34,13 @@ import com.uiblueprint.android.databinding.ActivityFolderDetailBinding
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.Request
-import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import okio.BufferedSink
-import okio.source
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -1673,52 +1670,21 @@ class FolderDetailActivity : AppCompatActivity() {
             try {
                 val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
                 val apiKey = BuildConfig.BACKEND_API_KEY
+                val fileName = RepoZipChunking.resolveDisplayName(contentResolver, uri)
+                val totalBytes = RepoZipChunking.resolveContentLength(contentResolver, uri)
+                val chunkSizeBytes = RepoZipTransferSettings.getChunkSizeBytes(this)
 
-                val fileName = contentResolver.query(uri, null, null, null, null)?.use { c ->
-                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (c.moveToFirst() && idx >= 0) c.getString(idx) else "repo.zip"
-                } ?: "repo.zip"
-
-                val inputStream = contentResolver.openInputStream(uri)
-                    ?: throw IOException("Cannot open URI: $uri")
-
-                val requestBody = object : RequestBody() {
-                    override fun contentType() = "application/zip".toMediaType()
-                    override fun writeTo(sink: BufferedSink) {
-                        sink.writeAll(inputStream.source())
-                    }
-                }
-
-                val multipart = MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart("repo", fileName, requestBody)
-                    .build()
-
-                val request = Request.Builder()
-                    .url("$baseUrl/v1/folders/$folderId/repo")
-                    .post(multipart)
-                    .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
-                    .build()
-
-                BackendClient.executeWithRetry(request).use { resp ->
-                    runOnUiThread {
-                        if (resp.isSuccessful) {
-                            setActionStatus(getString(R.string.status_repo_upload_succeeded))
-                            Toast.makeText(
-                                this,
-                                getString(R.string.toast_repo_analysis_queued),
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                            loadFolder()
-                        } else {
-                            setActionStatus(getString(R.string.status_repo_upload_failed))
-                            Toast.makeText(
-                                this,
-                                "${getString(R.string.status_repo_upload_failed)} HTTP ${resp.code}",
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        }
-                    }
+                if (totalBytes != null && RepoZipChunking.shouldChunk(totalBytes, chunkSizeBytes)) {
+                    uploadRepoZipChunked(
+                        uri = uri,
+                        fileName = fileName,
+                        totalBytes = totalBytes,
+                        chunkSizeBytes = chunkSizeBytes,
+                        baseUrl = baseUrl,
+                        apiKey = apiKey,
+                    )
+                } else {
+                    uploadRepoZipSingle(uri, fileName, baseUrl, apiKey)
                 }
             } catch (e: IOException) {
                 runOnUiThread {
@@ -1730,6 +1696,154 @@ class FolderDetailActivity : AppCompatActivity() {
                     ).show()
                 }
             }
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun uploadRepoZipSingle(uri: Uri, fileName: String, baseUrl: String, apiKey: String) {
+        RepoZipChunking.requireInputStream(contentResolver, uri).use { inputStream ->
+            val requestBody = inputStream.readBytes().toRequestBody("application/zip".toMediaType())
+            val multipart = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("repo", fileName, requestBody)
+                .build()
+
+            val request = Request.Builder()
+                .url("$baseUrl/v1/folders/$folderId/repo")
+                .post(multipart)
+                .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+                .build()
+
+            BackendClient.executeWithRetry(request) { attempt, total ->
+                runOnUiThread {
+                    setActionStatus(
+                        getString(
+                            R.string.status_repo_upload_retrying_single,
+                            attempt,
+                            total,
+                        ),
+                    )
+                }
+            }.use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) {
+                    onRepoUploadSucceeded()
+                } else {
+                    throw IOException(
+                        "HTTP ${resp.code}${if (body.isBlank()) "" else ": $body"}",
+                    )
+                }
+            }
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun uploadRepoZipChunked(
+        uri: Uri,
+        fileName: String,
+        totalBytes: Long,
+        chunkSizeBytes: Long,
+        baseUrl: String,
+        apiKey: String,
+    ) {
+        val uploadId = UUID.randomUUID().toString()
+        val totalChunks = RepoZipChunking.totalChunks(totalBytes, chunkSizeBytes)
+
+        RepoZipChunking.requireInputStream(contentResolver, uri).use { inputStream ->
+            RepoZipChunking.streamChunks(inputStream, totalBytes, chunkSizeBytes).forEach { chunk ->
+                val chunkBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart(
+                        "chunk",
+                        "${fileName}_part_${chunk.index + 1}",
+                        chunk.bytes.toRequestBody("application/octet-stream".toMediaType()),
+                    )
+                    .build()
+
+                val request = Request.Builder()
+                    .url("$baseUrl/v1/folders/$folderId/repo/chunks")
+                    .post(chunkBody)
+                    .addHeader("X-Upload-Id", uploadId)
+                    .addHeader("X-Chunk-Index", chunk.index.toString())
+                    .addHeader("X-Total-Chunks", totalChunks.toString())
+                    .addHeader("X-Chunk-Size", chunkSizeBytes.toString())
+                    .addHeader("X-Total-Bytes", totalBytes.toString())
+                    .addHeader("X-File-Name", fileName)
+                    .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+                    .build()
+
+                BackendClient.executeWithRetry(request) { attempt, total ->
+                    runOnUiThread {
+                        setActionStatus(
+                            getString(
+                                R.string.status_repo_upload_retrying_chunk,
+                                chunk.index + 1,
+                                totalChunks,
+                                attempt,
+                                total,
+                            ),
+                        )
+                    }
+                }.use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        throw IOException(
+                            "Chunk ${chunk.index + 1}/$totalChunks failed: HTTP ${resp.code}" +
+                                if (body.isBlank()) "" else ": $body",
+                        )
+                    }
+                }
+
+                val percent = (((chunk.index + 1L) * 100L) / totalChunks.toLong()).toInt()
+                runOnUiThread {
+                    setActionStatus(
+                        getString(
+                            R.string.status_repo_upload_progress,
+                            chunk.index + 1,
+                            totalChunks,
+                            percent,
+                        ),
+                    )
+                }
+            }
+        }
+
+        val finalizeRequest = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId/repo/chunks/$uploadId/finalize")
+            .put(ByteArray(0).toRequestBody())
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        runOnUiThread {
+            setActionStatus(getString(R.string.status_repo_upload_finalizing))
+        }
+        BackendClient.executeWithRetry(finalizeRequest) { attempt, total ->
+            runOnUiThread {
+                setActionStatus(
+                    getString(R.string.status_repo_upload_retrying_finalize, attempt, total),
+                )
+            }
+        }.use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (resp.isSuccessful) {
+                onRepoUploadSucceeded()
+            } else {
+                throw IOException(
+                    "Finalize failed: HTTP ${resp.code}${if (body.isBlank()) "" else ": $body"}",
+                )
+            }
+        }
+    }
+
+    private fun onRepoUploadSucceeded() {
+        runOnUiThread {
+            setActionStatus(getString(R.string.status_repo_upload_succeeded))
+            Toast.makeText(
+                this,
+                getString(R.string.toast_repo_analysis_queued),
+                Toast.LENGTH_SHORT,
+            ).show()
+            loadFolder()
         }
     }
 

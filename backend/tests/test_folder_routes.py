@@ -44,6 +44,7 @@ def _configure_sqlite(monkeypatch: pytest.MonkeyPatch, tmp_path):
     db_module.reset_engine(db_url)
     db_module.init_db()
     monkeypatch.setenv("DATABASE_URL", db_url)
+    monkeypatch.setenv("REPO_ZIP_UPLOADS_DIR", str(tmp_path / "repo_chunk_uploads"))
 
     yield
 
@@ -389,6 +390,146 @@ class TestUploadAssets:
         assert artifact.display_name == "Repository 1"
         assert job is not None
         assert job.source_artifact_id == artifact.id
+
+    def test_upload_repo_in_chunks_finalizes_and_creates_artifact_and_job(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        import backend.app.storage as storage
+        import backend.app.worker as worker
+        from backend.app.models import Artifact, Job
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+        upload_id = str(uuid.uuid4())
+        full_zip = b"PK\x03\x04repo-chunked-contents"
+        uploaded_payloads: list[bytes] = []
+
+        monkeypatch.setattr(storage, "storage_available", lambda: True)
+
+        def _capture_upload(folder_id: str, filename: str, local_path: str, content_type: str) -> str:
+            with open(local_path, "rb") as handle:
+                uploaded_payloads.append(handle.read())
+            return f"folders/{folder_id}/{filename}"
+
+        monkeypatch.setattr(storage, "upload_file", _capture_upload)
+        monkeypatch.setattr(worker, "enqueue_job", lambda *args, **kwargs: None)
+
+        chunk_size = 5
+        chunks = [full_zip[i : i + chunk_size] for i in range(0, len(full_zip), chunk_size)]
+        for index, chunk in enumerate(chunks):
+            resp = client.post(
+                f"/v1/folders/{fid}/repo/chunks",
+                files={"chunk": (f"repo.part{index}", chunk, "application/octet-stream")},
+                headers={
+                    **_auth(),
+                    "X-Upload-Id": upload_id,
+                    "X-Chunk-Index": str(index),
+                    "X-Total-Chunks": str(len(chunks)),
+                    "X-Chunk-Size": str(chunk_size),
+                    "X-Total-Bytes": str(len(full_zip)),
+                    "X-File-Name": "repo.zip",
+                },
+            )
+            assert resp.status_code == 202, resp.text
+
+        finalize_resp = client.put(
+            f"/v1/folders/{fid}/repo/chunks/{upload_id}/finalize",
+            headers=_auth(),
+        )
+        assert finalize_resp.status_code == 202, finalize_resp.text
+        assert uploaded_payloads == [full_zip]
+
+        with Session(db_module.get_engine()) as s:
+            artifact = s.exec(
+                select(Artifact)
+                .where(Artifact.folder_id == uuid.UUID(fid))
+                .where(Artifact.type == "repo_zip")
+            ).first()
+            job = s.exec(
+                select(Job)
+                .where(Job.folder_id == uuid.UUID(fid))
+                .where(Job.type == "analyze_repo")
+            ).first()
+
+        assert artifact is not None
+        assert job is not None
+        assert job.source_artifact_id == artifact.id
+
+    def test_finalize_repo_chunk_upload_rejects_missing_chunks(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import backend.app.storage as storage
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+        upload_id = str(uuid.uuid4())
+
+        monkeypatch.setattr(storage, "storage_available", lambda: True)
+
+        resp = client.post(
+            f"/v1/folders/{fid}/repo/chunks",
+            files={"chunk": ("repo.part0", b"PK\x03", "application/octet-stream")},
+            headers={
+                **_auth(),
+                "X-Upload-Id": upload_id,
+                "X-Chunk-Index": "0",
+                "X-Total-Chunks": "2",
+                "X-Chunk-Size": "5",
+                "X-Total-Bytes": "10",
+                "X-File-Name": "repo.zip",
+            },
+        )
+        assert resp.status_code == 202, resp.text
+
+        finalize_resp = client.put(
+            f"/v1/folders/{fid}/repo/chunks/{upload_id}/finalize",
+            headers=_auth(),
+        )
+        assert finalize_resp.status_code == 409
+        assert "Only 1/2 chunks received" in finalize_resp.json()["detail"]
+
+    def test_get_artifact_url_returns_presigned_url(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import backend.app.storage as storage
+        import backend.app.worker as worker
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+
+        monkeypatch.setattr(storage, "storage_available", lambda: True)
+        monkeypatch.setattr(
+            storage,
+            "upload_file",
+            lambda *args, **kwargs: f"folders/{fid}/repository-1.zip",
+        )
+        monkeypatch.setattr(
+            storage,
+            "get_presigned_url",
+            lambda object_key: f"https://example.test/{object_key}",
+        )
+        monkeypatch.setattr(worker, "enqueue_job", lambda *args, **kwargs: None)
+
+        resp = client.post(
+            f"/v1/folders/{fid}/repo",
+            files={"repo": ("repo.zip", _TINY_ZIP, "application/zip")},
+            headers=_auth(),
+        )
+        assert resp.status_code == 202, resp.text
+
+        folder_resp = client.get(f"/v1/folders/{fid}", headers=_auth())
+        artifact_id = next(
+            artifact["id"]
+            for artifact in folder_resp.json()["artifacts"]
+            if artifact["type"] == "repo_zip"
+        )
+
+        url_resp = client.get(f"/v1/folders/{fid}/artifacts/{artifact_id}/url", headers=_auth())
+        assert url_resp.status_code == 200
+        assert url_resp.json()["url"] == f"https://example.test/folders/{fid}/repository-1.zip"
 
 
 # ---------------------------------------------------------------------------
