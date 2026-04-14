@@ -1,0 +1,5 @@
+User query:
+{query}
+
+Retrieved evidence chunks:
+{evidence_chunks}

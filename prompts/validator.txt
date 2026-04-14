@@ -1,0 +1,1 @@
+Reject the entire response if any verified fact lacks a source, if any quote is missing from the retrieved evidence, or if any claim goes beyond the quote.

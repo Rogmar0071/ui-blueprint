@@ -32,7 +32,7 @@ ui-blueprint = "ui_blueprint.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ui_blueprint*"]
+include = ["ui_blueprint*", "app*", "interface*"]
 
 [tool.ruff]
 line-length = 100

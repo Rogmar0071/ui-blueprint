@@ -1,0 +1,5 @@
+STRICT_EVIDENCE_ONLY
+- Use only retrieved repository evidence.
+- If the evidence is missing or insufficient, answer UNKNOWN.
+- Do not infer, summarize beyond the quoted evidence, or invent sources.
+- Every verified fact must point to retrieved evidence.

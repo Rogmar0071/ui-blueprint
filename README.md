@@ -1,5 +1,41 @@
 # RecoB
 
+## Evidence-only query system
+
+This repository now also includes a strict evidence-only query pipeline under the
+top-level `app/`, `interface/`, `prompts/`, `data/`, and `run.py` files.
+
+### Purpose
+
+Turn a project folder into a non-hallucinating, evidence-only query system:
+
+- ingestion captures file path, line numbers, and chunk hashes
+- retrieval returns raw chunks only
+- execution falls back to `UNKNOWN` when evidence is missing
+- validation rejects unsupported claims and returns `INSUFFICIENT EVIDENCE`
+
+### Quick start
+
+1. Drop project files into `data/raw/`
+2. Run:
+
+   ```bash
+   python run.py
+   ```
+
+3. Ask project-bounded questions such as:
+
+   ```text
+   What does EventEngine do?
+   ```
+
+The response is always structured as:
+
+- `verified_facts`
+- `unknowns`
+- `invalid_scope`
+- `required_inputs`
+
 > Convert 10-second Android screen-recording clips into a structured "blueprint" suitable for near-human-indistinguishable replay in a custom renderer — and optionally for compiling into automation events.
 
 ---
