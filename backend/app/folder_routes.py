@@ -409,13 +409,6 @@ def patch_folder(
 # ---------------------------------------------------------------------------
 
 
-_ALLOWED_CLIP_CONTENT_TYPES = {
-    "video/mp4",
-    "video/quicktime",
-    "video/x-msvideo",
-    "video/webm",
-    "application/octet-stream",
-}
 _MAX_CLIP_BYTES: int = int(os.environ.get("MAX_CLIP_BYTES", 200 * 1024 * 1024))  # 200 MB
 _MAX_AUDIO_BYTES: int = int(os.environ.get("MAX_AUDIO_BYTES", 50 * 1024 * 1024))  # 50 MB
 _UPLOAD_CHUNK_SIZE: int = 64 * 1024  # 64 KB
@@ -440,7 +433,7 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
 
     # MIME type validation — allow all video/* types plus octet-stream for
     # clients that don't set an explicit content-type.
-    if not (content_type.startswith("video/") or content_type in _ALLOWED_CLIP_CONTENT_TYPES):
+    if not (content_type.startswith("video/") or content_type == "application/octet-stream"):
         raise HTTPException(
             status_code=415,
             detail=f"Unsupported clip type '{content_type}'. Expected a video/* MIME type.",
@@ -510,8 +503,8 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
                     error_detail=str(exc)[:2000],
                 )
                 raise HTTPException(
-                        status_code=502, detail=f"Storage upload failed: {exc}"
-                    ) from exc
+                    status_code=502, detail=f"Storage upload failed: {exc}"
+                ) from exc
 
             # Persist clip artifact (upsert — one clip artifact per folder).
             from sqlmodel import select
@@ -611,18 +604,6 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
 # ---------------------------------------------------------------------------
 
 
-_ALLOWED_AUDIO_CONTENT_TYPES = {
-    "audio/mp4",
-    "audio/m4a",
-    "audio/mpeg",
-    "audio/ogg",
-    "audio/wav",
-    "audio/webm",
-    "audio/x-m4a",
-    "application/octet-stream",
-}
-
-
 @router.post("/{folder_id}/audio", dependencies=[Depends(require_auth)])
 async def upload_audio(
     folder_id: str,
@@ -646,7 +627,7 @@ async def upload_audio(
         raise HTTPException(status_code=502, detail="Storage not configured")
 
     content_type = (audio.content_type or "").split(";")[0].strip() or "audio/mp4"
-    if not (content_type.startswith("audio/") or content_type in _ALLOWED_AUDIO_CONTENT_TYPES):
+    if not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
         raise HTTPException(
             status_code=415,
             detail=f"Unsupported audio type '{content_type}'. Expected an audio/* MIME type.",
