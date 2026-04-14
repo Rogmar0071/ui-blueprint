@@ -58,6 +58,7 @@
     <string name="dialog_rename_hint">Project name</string>
     <string name="dialog_delete_title">Delete project?</string>
     <string name="dialog_delete_message">This cannot be undone.</string>
+    <string name="dialog_delete_message_with_status">This will delete the project even if it is currently %1$s. This cannot be undone.</string>
     <string name="dialog_btn_rename">Rename</string>
     <string name="dialog_btn_delete">Delete</string>
     <string name="dialog_btn_cancel">Cancel</string>

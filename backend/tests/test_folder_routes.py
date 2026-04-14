@@ -179,6 +179,54 @@ class TestDeleteFolder:
         resp = client.delete(f"/v1/folders/{fid}", headers=_auth())
         assert resp.status_code == 204
 
+    @pytest.mark.parametrize("job_status", ["queued", "running"])
+    def test_delete_allows_active_jobs_and_cancels_rq_work(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        job_status: str,
+    ) -> None:
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        import backend.app.worker as worker_module
+        from backend.app.models import Folder, Job
+
+        folder = _create_folder(client)
+        fid = uuid.UUID(folder["id"])
+
+        with Session(db_module.get_engine()) as session:
+            folder_row = session.get(Folder, fid)
+            assert folder_row is not None
+            folder_row.status = job_status
+            session.add(folder_row)
+            session.add(Job(folder_id=fid, type="analyze", status=job_status, rq_job_id="rq-123"))
+            session.commit()
+
+        stop_calls: list[str] = []
+        cancel_calls: list[str] = []
+
+        class _Queue:
+            connection = object()
+
+        monkeypatch.setattr(worker_module, "_redis_queue", lambda name="default": _Queue())
+        monkeypatch.setattr(
+            "rq.command.send_stop_job_command",
+            lambda connection, job_id, serializer=None: stop_calls.append(job_id),
+        )
+        monkeypatch.setattr(
+            "rq.cancel_job",
+            lambda job_id, connection: cancel_calls.append(job_id),
+        )
+
+        resp = client.delete(f"/v1/folders/{fid}", headers=_auth())
+        assert resp.status_code == 204
+        assert stop_calls == ["rq-123"]
+        assert cancel_calls == ["rq-123"]
+
+        get_resp = client.get(f"/v1/folders/{fid}", headers=_auth())
+        assert get_resp.status_code == 404
+
     def test_delete_removes_folder(self, client: TestClient) -> None:
         folder = _create_folder(client)
         fid = folder["id"]

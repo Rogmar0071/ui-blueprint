@@ -128,6 +128,34 @@ def _folder_or_404(session, folder_id: uuid.UUID):
     return folder
 
 
+def _cancel_active_rq_job(rq_job_id: str | None) -> None:
+    """Best-effort stop/cancel for an active RQ job before folder deletion."""
+    if not rq_job_id:
+        return
+
+    try:
+        from rq import cancel_job
+        from rq.command import send_stop_job_command
+    except Exception:
+        return
+
+    from backend.app import worker
+
+    queue = worker._redis_queue()
+    if queue is None:
+        return
+
+    try:
+        send_stop_job_command(queue.connection, rq_job_id)
+    except Exception as exc:
+        logger.debug("RQ stop command skipped for %s: %s", rq_job_id, exc)
+
+    try:
+        cancel_job(rq_job_id, connection=queue.connection)
+    except Exception as exc:
+        logger.debug("RQ cancel skipped for %s: %s", rq_job_id, exc)
+
+
 def _dt(dt: datetime) -> str:
     """Serialise a datetime to ISO 8601 string (UTC)."""
     return dt.isoformat() if dt else None
@@ -469,7 +497,12 @@ def delete_folder(folder_id: str, db=Depends(_db_session)) -> None:
     fid = _parse_uuid(folder_id, "folder_id")
     folder = _folder_or_404(db, fid)
 
+    jobs = db.exec(select(Job).where(Job.folder_id == fid)).all()
     artifacts = db.exec(select(Artifact).where(Artifact.folder_id == fid)).all()
+
+    for job in jobs:
+        if job.status in ("queued", "running"):
+            _cancel_active_rq_job(job.rq_job_id)
 
     if storage.storage_available():
         for artifact in artifacts:
@@ -484,10 +517,11 @@ def delete_folder(folder_id: str, db=Depends(_db_session)) -> None:
                 )
 
     # Cascade deletes (for DBs/FK settings that don't auto-cascade).
-    for model in (FolderMessage, Job):
-        rows = db.exec(select(model).where(model.folder_id == fid)).all()
-        for row in rows:
-            db.delete(row)
+    rows = db.exec(select(FolderMessage).where(FolderMessage.folder_id == fid)).all()
+    for row in rows:
+        db.delete(row)
+    for job in jobs:
+        db.delete(job)
     for artifact in artifacts:
         db.delete(artifact)
 

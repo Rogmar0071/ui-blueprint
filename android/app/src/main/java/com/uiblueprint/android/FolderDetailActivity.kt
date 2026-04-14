@@ -438,12 +438,21 @@ class FolderDetailActivity : AppCompatActivity() {
     private fun showDeleteDialog() {
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.dialog_delete_title))
-            .setMessage(getString(R.string.dialog_delete_message))
+            .setMessage(getDeleteFolderMessage(lastFolderJson?.optString("status")))
             .setPositiveButton(getString(R.string.dialog_btn_delete)) { _, _ ->
                 callDeleteFolder()
             }
             .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
             .show()
+    }
+
+    private fun getDeleteFolderMessage(currentStatus: String?): String {
+        val status = currentStatus?.trim().orEmpty()
+        return if (status.isBlank()) {
+            getString(R.string.dialog_delete_message)
+        } else {
+            getString(R.string.dialog_delete_message_with_status, status)
+        }
     }
 
     private fun callRenameFolder(newTitle: String) {
@@ -631,7 +640,7 @@ class FolderDetailActivity : AppCompatActivity() {
             try {
                 BackendClient.executeWithRetry(request).use { resp ->
                     runOnUiThread {
-                        if (resp.isSuccessful) {
+                        if (resp.isSuccessful || resp.code == 404) {
                             finish()
                         } else {
                             Toast.makeText(this, getString(R.string.error_delete_failed), Toast.LENGTH_SHORT).show()

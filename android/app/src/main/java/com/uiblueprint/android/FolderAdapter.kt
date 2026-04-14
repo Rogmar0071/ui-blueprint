@@ -26,7 +26,7 @@ class FolderAdapter(
 
     interface FolderActionListener {
         fun onRenameFolder(folderId: String, currentTitle: String)
-        fun onDeleteFolder(folderId: String)
+        fun onDeleteFolder(folderId: String, currentStatus: String)
     }
 
     private val items = mutableListOf<MainActivity.FolderItem>()
@@ -75,7 +75,7 @@ class FolderAdapter(
                     true
                 }
                 R.id.action_delete_project -> {
-                    listener?.onDeleteFolder(item.id)
+                    listener?.onDeleteFolder(item.id, item.status)
                     true
                 }
                 else -> false
