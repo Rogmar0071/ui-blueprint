@@ -409,11 +409,16 @@ def patch_folder(
 # ---------------------------------------------------------------------------
 
 
+_MAX_CLIP_BYTES: int = int(os.environ.get("MAX_CLIP_BYTES", 200 * 1024 * 1024))  # 200 MB
+_MAX_AUDIO_BYTES: int = int(os.environ.get("MAX_AUDIO_BYTES", 50 * 1024 * 1024))  # 50 MB
+_UPLOAD_CHUNK_SIZE: int = 64 * 1024  # 64 KB
+
+
 @router.post("/{folder_id}/clip", status_code=202, dependencies=[Depends(require_auth)])
 async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session)) -> JSONResponse:
     """
-    Accept a multipart clip upload, store it in R2 (when configured), create
-    an Artifact record, and enqueue an ``analyze`` job.
+    Accept a multipart clip upload, stream it directly to disk, store it in R2
+    (when configured), create an Artifact record, and enqueue an ``analyze`` job.
 
     Returns 202 Accepted with the created job info.
     """
@@ -423,8 +428,16 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
     fid = _parse_uuid(folder_id, "folder_id")
     folder = _folder_or_404(db, fid)
 
-    clip_bytes = await clip.read()
     filename = clip.filename or "clip.mp4"
+    content_type = (clip.content_type or "").split(";")[0].strip() or "video/mp4"
+
+    # MIME type validation — allow all video/* types plus octet-stream for
+    # clients that don't set an explicit content-type.
+    if not (content_type.startswith("video/") or content_type == "application/octet-stream"):
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported clip type '{content_type}'. Expected a video/* MIME type.",
+        )
 
     log_event(
         source="backend",
@@ -435,41 +448,85 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
         details_json={"filename": filename},
     )
 
+    # --- Stream file to a temporary location on disk -------------------------
+    ext = os.path.splitext(filename)[1] or ".mp4"
+    tmp_path: str | None = None
+    total_bytes = 0
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await clip.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_CLIP_BYTES:
+                    limit_mb = _MAX_CLIP_BYTES // (1024 * 1024)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Clip exceeds maximum allowed size of {limit_mb} MB",
+                    )
+                tmp.write(chunk)
+    except HTTPException:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    except Exception as exc:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except Exception:  # noqa: BLE001
+                pass
+        logger.exception("Failed to stream clip upload to disk")
+        raise HTTPException(status_code=500, detail="Failed to save uploaded clip") from exc
+
     # --- Storage (R2) -------------------------------------------------------
     clip_key: str | None = None
-    if storage.storage_available():
-        try:
-            clip_key = storage.upload_bytes(
-                folder_id, filename, clip_bytes, clip.content_type or "video/mp4"
-            )
-        except Exception as exc:
-            logger.error("R2 upload failed: %s", exc)
-            log_event(
-                source="storage",
-                level="error",
-                event_type="storage.put_object.failed",
-                message=f"R2 upload failed for folder {fid}: {exc}",
-                folder_id=str(fid),
-                error_type=type(exc).__name__,
-                error_detail=str(exc)[:2000],
-            )
-            raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}") from exc
+    try:
+        if storage.storage_available():
+            try:
+                clip_key = storage.upload_file(
+                    folder_id, filename, tmp_path, content_type
+                )
+            except Exception as exc:
+                logger.error("R2 upload failed: %s", exc)
+                log_event(
+                    source="storage",
+                    level="error",
+                    event_type="storage.put_object.failed",
+                    message=f"R2 upload failed for folder {fid}: {exc}",
+                    folder_id=str(fid),
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc)[:2000],
+                )
+                raise HTTPException(
+                    status_code=502, detail=f"Storage upload failed: {exc}"
+                ) from exc
 
-        # Persist clip artifact (upsert — one clip artifact per folder).
-        from sqlmodel import select
-        existing_clip = db.exec(
-            select(Artifact).where(Artifact.folder_id == fid, Artifact.type == "clip")
-        ).first()
-        if existing_clip is not None:
-            existing_clip.object_key = clip_key
-            db.add(existing_clip)
-        else:
-            artifact = Artifact(
-                folder_id=fid,
-                type="clip",
-                object_key=clip_key,
-            )
-            db.add(artifact)
+            # Persist clip artifact (upsert — one clip artifact per folder).
+            from sqlmodel import select
+            existing_clip = db.exec(
+                select(Artifact).where(Artifact.folder_id == fid, Artifact.type == "clip")
+            ).first()
+            if existing_clip is not None:
+                existing_clip.object_key = clip_key
+                db.add(existing_clip)
+            else:
+                artifact = Artifact(
+                    folder_id=fid,
+                    type="clip",
+                    object_key=clip_key,
+                )
+                db.add(artifact)
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except Exception:  # noqa: BLE001
+                pass
 
     # Update folder clip_object_key.
     folder.clip_object_key = clip_key
@@ -554,8 +611,9 @@ async def upload_audio(
     db=Depends(_db_session),
 ) -> JSONResponse:
     """
-    Accept a multipart audio upload, store it in R2 (when configured), create
-    an Artifact record, and update the folder's audio_object_key.
+    Accept a multipart audio upload, stream it directly to disk, store it in R2
+    (when configured), create an Artifact record, and update the folder's
+    audio_object_key.
 
     Returns 200 with the audio_object_key and artifact_id.
     """
@@ -568,10 +626,45 @@ async def upload_audio(
     if not storage.storage_available():
         raise HTTPException(status_code=502, detail="Storage not configured")
 
-    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
-        tmp_path = tmp.name
-        content = await audio.read()
-        tmp.write(content)
+    content_type = (audio.content_type or "").split(";")[0].strip() or "audio/mp4"
+    if not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported audio type '{content_type}'. Expected an audio/* MIME type.",
+        )
+
+    tmp_path: str | None = None
+    total_bytes = 0
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await audio.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_AUDIO_BYTES:
+                    limit_mb = _MAX_AUDIO_BYTES // (1024 * 1024)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Audio file exceeds maximum allowed size of {limit_mb} MB",
+                    )
+                tmp.write(chunk)
+    except HTTPException:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    except Exception as exc:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except Exception:  # noqa: BLE001
+                pass
+        logger.exception("Failed to stream audio upload to disk")
+        raise HTTPException(status_code=500, detail="Failed to save uploaded audio") from exc
 
     try:
         object_key = storage.upload_file(

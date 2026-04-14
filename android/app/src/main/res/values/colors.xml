@@ -9,6 +9,7 @@
     <color name="text_hint">#66EBEBF5</color>
     <color name="accent_white">#FFFFFF</color>
     <color name="destructive">#FF3B30</color>
+    <color name="error">#FF3B30</color>
     <color name="divider">#33FFFFFF</color>
     <color name="icon_tint">#FFFFFF</color>
     <color name="selected_overlay">#33FFFFFF</color>
