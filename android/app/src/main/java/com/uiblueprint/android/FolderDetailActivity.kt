@@ -104,6 +104,7 @@ class FolderDetailActivity : AppCompatActivity() {
 
     /** clip_object_key from the last successful loadFolder() response. */
     private var folderClipObjectKey: String? = null
+    private var isResourcePanelExpanded = false
 
     private val uploadGroupAdapter = UploadGroupAdapter(
         onOpenUpload = { group -> group.uploadArtifact?.let { openArtifact(it) } },
@@ -311,12 +312,17 @@ class FolderDetailActivity : AppCompatActivity() {
         binding.btnRecordAudio20s.setOnClickListener { onRecordAudioClicked() }
         binding.btnSend.setOnClickListener { onSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
+        binding.btnToggleResourcePanel.setOnClickListener { toggleResourcePanel() }
         setupMicButton()
         if (initialTitle.isNullOrBlank()) {
             binding.tvFolderTitle.text = getString(R.string.folder_detail_title)
         }
         binding.tvFolderStatus.text = getString(R.string.folder_loading)
         binding.tvFolderId.text = getString(R.string.label_folder_id, folderId)
+        updateResourcePanelUi()
+        updateRecordButtonUi(enabled = true)
+        updateAnalyzeButtonUi(enabled = false)
+        updateAudioRecordButtonUi()
 
         binding.rvUploadGroups.layoutManager = LinearLayoutManager(this)
         binding.rvUploadGroups.adapter = uploadGroupAdapter
@@ -543,7 +549,7 @@ class FolderDetailActivity : AppCompatActivity() {
 
     private fun onRecordClicked() {
         setActionStatus(getString(R.string.status_requesting_permission))
-        binding.btnRecord.isEnabled = false
+        updateRecordButtonUi(enabled = false)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
@@ -666,7 +672,7 @@ class FolderDetailActivity : AppCompatActivity() {
     private fun startAudioCapture() {
         audioToggle.onRecordingStarted()
         setActionStatus(getString(R.string.status_recording_audio))
-        binding.btnRecordAudio20s.text = getString(R.string.btn_stop_audio)
+        updateAudioRecordButtonUi()
 
         val intent = Intent(this, AudioCaptureService::class.java).apply {
             putExtra(AudioCaptureService.EXTRA_MAX_DURATION_MS, AUDIO_RECORDING_MAX_MS)
@@ -681,8 +687,7 @@ class FolderDetailActivity : AppCompatActivity() {
     }
 
     private fun resetAudioRecordButton() {
-        binding.btnRecordAudio20s.isEnabled = true
-        binding.btnRecordAudio20s.text = getString(R.string.btn_record_audio_20s)
+        updateAudioRecordButtonUi()
         if (!isAudioRecording) {
             setActionStatus(null)
         }
@@ -753,7 +758,7 @@ class FolderDetailActivity : AppCompatActivity() {
         }
 
         setActionStatus(getString(R.string.status_recording))
-        binding.btnRecord.isEnabled = false
+        updateRecordButtonUi(enabled = false)
         scheduleRecordingWatchdog(recordingCompletionHelper.remainingTimeoutMs(startedAtMs, nowMs))
     }
 
@@ -939,7 +944,7 @@ class FolderDetailActivity : AppCompatActivity() {
      * Does NOT upload the clip — upload only happens via Record or Pick from Gallery.
      */
     private fun enqueueAnalyzeJob(options: JSONObject = JSONObject()) {
-        binding.btnAnalyze.isEnabled = false
+        updateAnalyzeButtonUi(enabled = false)
 
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
@@ -960,7 +965,7 @@ class FolderDetailActivity : AppCompatActivity() {
                             loadFolder()
                             startPolling()
                         } else {
-                            binding.btnAnalyze.isEnabled = true
+                            updateAnalyzeButtonUi(enabled = true)
                             Toast.makeText(
                                 this,
                                 "Failed to start analyze: HTTP ${resp.code}",
@@ -971,7 +976,7 @@ class FolderDetailActivity : AppCompatActivity() {
                 }
             } catch (e: IOException) {
                 runOnUiThread {
-                    binding.btnAnalyze.isEnabled = true
+                    updateAnalyzeButtonUi(enabled = true)
                     Toast.makeText(this, "Failed to start analyze: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
@@ -991,8 +996,56 @@ class FolderDetailActivity : AppCompatActivity() {
         }
     }
 
+    private fun toggleResourcePanel() {
+        isResourcePanelExpanded = !isResourcePanelExpanded
+        updateResourcePanelUi()
+    }
+
+    private fun updateResourcePanelUi() {
+        binding.layoutResourceBody.visibility = if (isResourcePanelExpanded) View.VISIBLE else View.GONE
+        binding.btnToggleResourcePanel.rotation = if (isResourcePanelExpanded) 0f else -90f
+        binding.btnToggleResourcePanel.contentDescription = getString(
+            if (isResourcePanelExpanded) {
+                R.string.action_minimize_resource
+            } else {
+                R.string.action_maximize_resource
+            },
+        )
+    }
+
+    private fun updateRecordButtonUi(enabled: Boolean) {
+        binding.btnRecord.isEnabled = enabled
+        binding.btnRecord.alpha = if (enabled) 1f else 0.45f
+    }
+
+    private fun updateAnalyzeButtonUi(
+        enabled: Boolean,
+        contentDescription: String = getString(R.string.btn_analyze),
+    ) {
+        binding.btnAnalyze.isEnabled = enabled
+        binding.btnAnalyze.alpha = if (enabled) 1f else 0.45f
+        binding.btnAnalyze.contentDescription = contentDescription
+    }
+
+    private fun updateAudioRecordButtonUi() {
+        binding.btnRecordAudio20s.isEnabled = true
+        binding.btnRecordAudio20s.alpha = 1f
+        binding.btnRecordAudio20s.setImageResource(
+            if (isAudioRecording) android.R.drawable.ic_media_pause else android.R.drawable.ic_btn_speak_now,
+        )
+        binding.btnRecordAudio20s.setColorFilter(
+            ContextCompat.getColor(
+                this,
+                if (isAudioRecording) R.color.destructive else R.color.icon_tint,
+            ),
+        )
+        binding.btnRecordAudio20s.contentDescription = getString(
+            if (isAudioRecording) R.string.btn_stop_audio else R.string.btn_record_audio_20s,
+        )
+    }
+
     private fun resetActionButtons() {
-        binding.btnRecord.isEnabled = true
+        updateRecordButtonUi(enabled = true)
         setActionStatus(null)
     }
 
@@ -1205,18 +1258,21 @@ class FolderDetailActivity : AppCompatActivity() {
                         it.optString("status") in ACTIVE_JOB_STATUSES
                 }
                 ?.optString("status") ?: "queued"
-            binding.btnAnalyze.isEnabled = false
-            binding.btnAnalyze.text = if (activeAnalyzeStatus == "running") {
-                getString(R.string.btn_analyze_running)
-            } else {
-                getString(R.string.btn_analyze_queued)
-            }
+            updateAnalyzeButtonUi(
+                enabled = false,
+                contentDescription = getString(
+                    if (activeAnalyzeStatus == "running") {
+                        R.string.btn_analyze_running
+                    } else {
+                        R.string.btn_analyze_queued
+                    },
+                ),
+            )
             startPolling()
         } else {
             stopPolling()
             val hasClip = lastClipPath != null || lastGalleryUri != null || !folderClipObjectKey.isNullOrBlank()
-            binding.btnAnalyze.isEnabled = hasClip
-            binding.btnAnalyze.text = getString(R.string.btn_analyze)
+            updateAnalyzeButtonUi(enabled = hasClip)
         }
     }
 
@@ -1472,7 +1528,7 @@ class FolderDetailActivity : AppCompatActivity() {
     private fun enqueueAnalyzeJobForced(options: JSONObject = JSONObject()) {
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
-        binding.btnAnalyze.isEnabled = false
+        updateAnalyzeButtonUi(enabled = false)
         val bodyJson = JSONObject().put("type", "analyze")
         if (options.length() > 0) bodyJson.put("options", options)
         val body = bodyJson.toString().toRequestBody("application/json".toMediaType())
@@ -1490,7 +1546,7 @@ class FolderDetailActivity : AppCompatActivity() {
                             loadFolder()
                             startPolling()
                         } else {
-                            binding.btnAnalyze.isEnabled = true
+                            updateAnalyzeButtonUi(enabled = true)
                             Toast.makeText(
                                 this,
                                 "Failed to start analyze: HTTP ${resp.code}",
@@ -1501,7 +1557,7 @@ class FolderDetailActivity : AppCompatActivity() {
                 }
             } catch (e: IOException) {
                 runOnUiThread {
-                    binding.btnAnalyze.isEnabled = true
+                    updateAnalyzeButtonUi(enabled = true)
                     Toast.makeText(this, "Failed to start analyze: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
@@ -1549,8 +1605,7 @@ class FolderDetailActivity : AppCompatActivity() {
                     runOnUiThread {
                         if (resp.isSuccessful) {
                             stopPolling()
-                            binding.btnAnalyze.isEnabled = true
-                            binding.btnAnalyze.text = getString(R.string.btn_analyze)
+                            updateAnalyzeButtonUi(enabled = true)
                             Toast.makeText(this, getString(R.string.toast_analysis_cancelled), Toast.LENGTH_SHORT).show()
                             loadFolder()
                         } else {
