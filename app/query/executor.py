@@ -47,7 +47,7 @@ class StrictEvidenceExecutor:
                 if not stripped:
                     continue
                 overlap = len(set(tokenize(stripped)) & set(query_terms))
-                if overlap <= 0:
+                if overlap == 0:
                     continue
                 facts.append(
                     (

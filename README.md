@@ -6,6 +6,9 @@ This repository now also includes an Evidence AI prototype under the top-level
 `app/`, `interface/`, `prompts/`, `data/`, and `run.py` files, alongside the
 existing blueprint tooling below.
 
+The package/distribution name is `RecoB`, which intentionally matches the
+repository identity while covering both the blueprint and evidence-query tracks.
+
 ### Purpose
 
 Turn a project folder into a non-hallucinating, evidence-only query system:
