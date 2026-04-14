@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -30,9 +31,15 @@ def _validated_upload_id(upload_id: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid upload_id") from None
 
 
+def _upload_storage_key(upload_id: str) -> str:
+    """Derive a filesystem-safe opaque directory name from the client upload id."""
+    canonical_upload_id = _validated_upload_id(upload_id)
+    return hashlib.sha256(canonical_upload_id.encode("utf-8")).hexdigest()
+
+
 def _chunks_dir(upload_id: str, *, create: bool = True) -> Path:
     """Return the safe on-disk chunk directory for *upload_id*."""
-    safe_upload_id = _validated_upload_id(upload_id)
+    safe_upload_id = _upload_storage_key(upload_id)
     chunks_root = (_UPLOADS_ROOT / "chunks").resolve()
     candidate = (chunks_root / safe_upload_id).resolve()
     try:
@@ -167,7 +174,7 @@ def merge_chunks(upload_id: str, max_bytes: int) -> tuple[dict[str, Any], str]:
     assembled_root.mkdir(parents=True, exist_ok=True)
     current_chunk_path: Path | None = None
     with tempfile.NamedTemporaryFile(
-        prefix=f"{_validated_upload_id(upload_id)}-",
+        prefix=f"{_upload_storage_key(upload_id)}-",
         suffix=".zip",
         dir=assembled_root,
         delete=False,
@@ -184,7 +191,7 @@ def merge_chunks(upload_id: str, max_bytes: int) -> tuple[dict[str, Any], str]:
                         status_code=413,
                         detail=(
                             "Repo ZIP exceeds maximum allowed size of "
-                            f"{max_bytes // (1024 * 1024)} MB"
+                            f"{max_bytes / (1024 * 1024):.2f} MB"
                         ),
                     )
                 output_handle.write(chunk_bytes)

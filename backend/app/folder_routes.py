@@ -981,8 +981,6 @@ async def finalize_repo_chunk_upload(
     max_repo_zip_bytes = int(os.environ.get("MAX_REPO_ZIP_BYTES", 200 * 1024 * 1024))
     tmp_path: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-            tmp_path = tmp.name
         manifest, tmp_path = repo_chunking.merge_chunks(upload_id, max_repo_zip_bytes)
         artifact, job, key = _persist_repo_upload(db, fid, tmp_path)
     finally:

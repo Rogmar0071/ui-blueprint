@@ -34,8 +34,11 @@ import com.uiblueprint.android.databinding.ActivityFolderDetailBinding
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
+import okio.source
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -1701,38 +1704,44 @@ class FolderDetailActivity : AppCompatActivity() {
 
     @Throws(IOException::class)
     private fun uploadRepoZipSingle(uri: Uri, fileName: String, baseUrl: String, apiKey: String) {
-        RepoZipChunking.requireInputStream(contentResolver, uri).use { inputStream ->
-            val requestBody = inputStream.readBytes().toRequestBody("application/zip".toMediaType())
-            val multipart = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("repo", fileName, requestBody)
-                .build()
+        val requestBody = object : RequestBody() {
+            override fun contentType() = "application/zip".toMediaType()
 
-            val request = Request.Builder()
-                .url("$baseUrl/v1/folders/$folderId/repo")
-                .post(multipart)
-                .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
-                .build()
+            override fun writeTo(sink: BufferedSink) {
+                RepoZipChunking.requireInputStream(contentResolver, uri).use { inputStream ->
+                    sink.writeAll(inputStream.source())
+                }
+            }
+        }
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("repo", fileName, requestBody)
+            .build()
 
-            BackendClient.executeWithRetry(request) { attempt, total ->
-                runOnUiThread {
-                    setActionStatus(
-                        getString(
-                            R.string.status_repo_upload_retrying_single,
-                            attempt,
-                            total,
-                        ),
-                    )
-                }
-            }.use { resp ->
-                val body = resp.body?.string().orEmpty()
-                if (resp.isSuccessful) {
-                    onRepoUploadSucceeded()
-                } else {
-                    throw IOException(
-                        "HTTP ${resp.code}${if (body.isBlank()) "" else ": $body"}",
-                    )
-                }
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId/repo")
+            .post(multipart)
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        BackendClient.executeWithRetry(request) { attempt, total ->
+            runOnUiThread {
+                setActionStatus(
+                    getString(
+                        R.string.status_repo_upload_retrying_single,
+                        attempt,
+                        total,
+                    ),
+                )
+            }
+        }.use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (resp.isSuccessful) {
+                onRepoUploadSucceeded()
+            } else {
+                throw IOException(
+                    "HTTP ${resp.code}${if (body.isBlank()) "" else ": $body"}",
+                )
             }
         }
     }
