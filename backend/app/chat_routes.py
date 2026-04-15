@@ -37,6 +37,14 @@ router = APIRouter(prefix="/api")
 
 logger = logging.getLogger(__name__)
 
+ModeEngineMode = Literal[
+    "prediction_mode",
+    "strict_mode",
+    "debug_mode",
+    "builder_mode",
+    "audit_mode",
+]
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -57,6 +65,7 @@ _TOOLS_AVAILABLE = [
 
 _MODE_ENGINE_CONTRACT_ID = "MODE_ENGINE_EXECUTION_V1"
 _MODE_ENGINE_DEFAULT_MODE = "strict_mode"
+_MODE_ENGINE_MAX_RETRIES = 3
 _MODE_ENGINE_ALLOWED_MODES = (
     "prediction_mode",
     "strict_mode",
@@ -323,15 +332,7 @@ class ChatPostRequest(BaseModel):
     message: str
     context: ChatContext = Field(default_factory=ChatContext)
     agent_mode: bool = False
-    modes: list[
-        Literal[
-            "prediction_mode",
-            "strict_mode",
-            "debug_mode",
-            "builder_mode",
-            "audit_mode",
-        ]
-    ] = Field(default_factory=list)
+    modes: list[ModeEngineMode] = Field(default_factory=list)
 
     @field_validator("message")
     @classmethod
@@ -346,15 +347,7 @@ class ChatModeEngineResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    modes: list[
-        Literal[
-            "prediction_mode",
-            "strict_mode",
-            "debug_mode",
-            "builder_mode",
-            "audit_mode",
-        ]
-    ] = Field(default_factory=list)
+    modes: list[ModeEngineMode] = Field(default_factory=list)
     contract_id: str | None = None
 
 
@@ -716,14 +709,11 @@ class ModeEngineValidationError(ValueError):
 
 def _normalize_mode_engine_modes(
     requested_modes: list[str], enabled: bool
-) -> list[Literal["prediction_mode", "strict_mode", "debug_mode", "builder_mode", "audit_mode"]]:
+) -> list[ModeEngineMode]:
     if not enabled:
         return []
 
-    deduped: list[str] = []
-    for mode in requested_modes:
-        if mode not in deduped:
-            deduped.append(mode)
+    deduped = list(dict.fromkeys(requested_modes))
 
     if _MODE_ENGINE_DEFAULT_MODE not in deduped:
         deduped.insert(0, _MODE_ENGINE_DEFAULT_MODE)
@@ -935,7 +925,7 @@ def _call_openai_chat_with_mode_engine(
     )
     attempt_message = message
 
-    for _ in range(3):
+    for _ in range(_MODE_ENGINE_MAX_RETRIES):
         reply = _call_openai_chat(
             attempt_message,
             api_key,
@@ -1178,7 +1168,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     agent_mode = request.agent_mode or (
         http_request.headers.get("X-Agent-Mode", "0") == "1"
     )
-    mode_engine_enabled = agent_mode or "modes" in (body or {})
+    mode_engine_enabled = agent_mode or "modes" in request.model_fields_set
     selected_modes = _normalize_mode_engine_modes(request.modes, mode_engine_enabled)
 
     db = _db_session()
