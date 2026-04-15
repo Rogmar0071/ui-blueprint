@@ -418,6 +418,7 @@ class TestChatModeEngine:
         assert reply["selected_modes"] == ["strict_mode", "prediction_mode"]
         assert len(reply["alternatives"]) >= 2
         assert reply["explicit_data_status"] == "partial_data"
+        assert reply["confidence"] == 0.42
 
 
 # ---------------------------------------------------------------------------

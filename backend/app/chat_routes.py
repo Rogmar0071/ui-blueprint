@@ -66,13 +66,7 @@ _TOOLS_AVAILABLE = [
 _MODE_ENGINE_CONTRACT_ID = "MODE_ENGINE_EXECUTION_V1"
 _MODE_ENGINE_DEFAULT_MODE = "strict_mode"
 _MODE_ENGINE_MAX_RETRIES = 3
-_MODE_ENGINE_ALLOWED_MODES = (
-    "prediction_mode",
-    "strict_mode",
-    "debug_mode",
-    "builder_mode",
-    "audit_mode",
-)
+_MODE_ENGINE_FALLBACK_MESSAGE_MAX_LENGTH = 200
 _MODE_ENGINE_MODE_RULES: dict[str, dict[str, Any]] = {
     "prediction_mode": {
         "behavior_rules": [
@@ -708,7 +702,7 @@ class ModeEngineValidationError(ValueError):
 
 
 def _normalize_mode_engine_modes(
-    requested_modes: list[str], enabled: bool
+    requested_modes: list[ModeEngineMode], enabled: bool
 ) -> list[ModeEngineMode]:
     if not enabled:
         return []
@@ -718,11 +712,7 @@ def _normalize_mode_engine_modes(
     if _MODE_ENGINE_DEFAULT_MODE not in deduped:
         deduped.insert(0, _MODE_ENGINE_DEFAULT_MODE)
 
-    return [
-        mode
-        for mode in deduped
-        if mode in _MODE_ENGINE_ALLOWED_MODES
-    ]
+    return deduped
 
 
 def _mode_engine_required_fields(
@@ -817,10 +807,8 @@ def _mode_engine_validation_errors(
         _require_list("assumptions")
         _require_list("alternatives", minimum=2)
         confidence = payload.get("confidence")
-        if not isinstance(confidence, (int, float, str)) or (
-            isinstance(confidence, str) and not confidence.strip()
-        ):
-            errors.append("confidence must be a number or non-empty string")
+        if not isinstance(confidence, (int, float)):
+            errors.append("confidence must be a number")
         _require_list("missing_data")
 
     if "debug_mode" in selected_modes:
@@ -886,10 +874,10 @@ def _build_mode_engine_fallback(
             {
                 "root_cause": "Insufficient verified data to identify a root cause.",
                 "reasoning_steps": [
-                    "The validator could not accept an answer backed by sufficient data.",
-                    "Additional evidence is required before a causal chain can be confirmed.",
-                ],
-                "failure_paths": [message[:200]],
+                "The validator could not accept an answer backed by sufficient data.",
+                "Additional evidence is required before a causal chain can be confirmed.",
+            ],
+                "failure_paths": [message[:_MODE_ENGINE_FALLBACK_MESSAGE_MAX_LENGTH]],
             }
         )
     if "builder_mode" in selected_modes:
