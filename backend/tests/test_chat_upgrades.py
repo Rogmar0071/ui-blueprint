@@ -11,6 +11,7 @@ Tests for global chat upgrades:
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from unittest.mock import MagicMock, patch
@@ -313,6 +314,110 @@ class TestChatAgentMode:
             headers=_auth(),
         )
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Tests: mode engine contract enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestChatModeEngine:
+    def test_mode_engine_fallback_without_openai_key(self, client, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Debug this failure", "modes": ["debug_mode", "audit_mode"]},
+            headers=_auth(),
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mode_engine"]["enabled"] is True
+        assert body["mode_engine"]["contract_id"] == "MODE_ENGINE_EXECUTION_V1"
+        assert body["mode_engine"]["modes"] == [
+            "strict_mode",
+            "debug_mode",
+            "audit_mode",
+        ]
+
+        reply = json.loads(body["reply"])
+        assert reply["contract_id"] == "MODE_ENGINE_EXECUTION_V1"
+        assert reply["selected_modes"] == ["strict_mode", "debug_mode", "audit_mode"]
+        assert reply["explicit_data_status"] == "insufficient_data"
+        assert reply["missing_data_list"]
+        assert reply["root_cause"]
+        assert reply["reasoning_steps"]
+        assert reply["failure_paths"]
+        assert reply["risks"]
+        assert reply["inconsistencies"] == []
+        assert reply["assumptions"]
+
+    def test_mode_engine_invalid_mode_returns_422(self, client):
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Hello", "modes": ["not_a_mode"]},
+            headers=_auth(),
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "invalid_request"
+
+    def test_mode_engine_retries_until_valid_json(self, client, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+        invalid_response = MagicMock()
+        invalid_response.status_code = 200
+        invalid_response.raise_for_status = MagicMock()
+        invalid_response.json.return_value = {
+            "choices": [{"message": {"content": "not valid json"}}]
+        }
+
+        valid_response = MagicMock()
+        valid_response.status_code = 200
+        valid_response.raise_for_status = MagicMock()
+        valid_response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "contract_id": "MODE_ENGINE_EXECUTION_V1",
+                                "selected_modes": ["strict_mode", "prediction_mode"],
+                                "explicit_data_status": "partial_data",
+                                "missing_data_list": ["Need repository internals"],
+                                "assumptions": ["The request targets existing code."],
+                                "alternatives": [
+                                    "Modify the existing implementation.",
+                                    "Add a new isolated component.",
+                                ],
+                                "confidence": 0.42,
+                                "missing_data": ["Repository topology"],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+        with patch("backend.app.chat_routes.httpx.Client") as mock_client_cls:
+            mock_http = MagicMock()
+            mock_client_cls.return_value.__enter__.return_value = mock_http
+            mock_http.post.side_effect = [invalid_response, valid_response]
+
+            resp = client.post(
+                "/api/chat",
+                json={"message": "Plan a change", "modes": ["prediction_mode"]},
+                headers=_auth(),
+            )
+
+        assert resp.status_code == 200
+        assert mock_http.post.call_count == 2
+        body = resp.json()
+        assert body["mode_engine"]["modes"] == ["strict_mode", "prediction_mode"]
+        reply = json.loads(body["reply"])
+        assert reply["selected_modes"] == ["strict_mode", "prediction_mode"]
+        assert len(reply["alternatives"]) >= 2
+        assert reply["explicit_data_status"] == "partial_data"
 
 
 # ---------------------------------------------------------------------------

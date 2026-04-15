@@ -55,6 +55,64 @@ _TOOLS_AVAILABLE = [
     "web_search",
 ]
 
+_MODE_ENGINE_CONTRACT_ID = "MODE_ENGINE_EXECUTION_V1"
+_MODE_ENGINE_DEFAULT_MODE = "strict_mode"
+_MODE_ENGINE_ALLOWED_MODES = (
+    "prediction_mode",
+    "strict_mode",
+    "debug_mode",
+    "builder_mode",
+    "audit_mode",
+)
+_MODE_ENGINE_MODE_RULES: dict[str, dict[str, Any]] = {
+    "prediction_mode": {
+        "behavior_rules": [
+            "must_surface_assumptions",
+            "must_provide_multiple_possibilities",
+            "must_assign_confidence_score",
+            "must_identify_missing_data",
+        ],
+        "output_requirements": ["assumptions", "alternatives", "confidence", "missing_data"],
+        "constraints": ["no_single_path_answers"],
+    },
+    "strict_mode": {
+        "behavior_rules": [
+            "no_guessing",
+            "no_inference_without_data",
+            "must_declare_insufficient_data",
+        ],
+        "output_requirements": ["explicit_data_status", "missing_data_list"],
+        "constraints": ["prohibit_assumptions_without_flagging"],
+    },
+    "debug_mode": {
+        "behavior_rules": [
+            "step_by_step_reasoning",
+            "identify_failure_points",
+            "map_causal_chain",
+        ],
+        "output_requirements": ["root_cause", "reasoning_steps", "failure_paths"],
+        "constraints": ["no_surface_level_answers"],
+    },
+    "builder_mode": {
+        "behavior_rules": [
+            "enforce_modular_design",
+            "enforce_clear_structure",
+            "avoid_ambiguity",
+        ],
+        "output_requirements": ["system_structure", "components", "relationships"],
+        "constraints": ["no_unstructured_output"],
+    },
+    "audit_mode": {
+        "behavior_rules": [
+            "identify_risks",
+            "detect_inconsistencies",
+            "highlight_assumptions",
+        ],
+        "output_requirements": ["risks", "inconsistencies", "assumptions"],
+        "constraints": ["no_unverified_acceptance"],
+    },
+}
+
 _CHAT_SYSTEM_PROMPT = (
     "You are UI Blueprint Assistant — a high-discipline AI that operates at system level, "
     "not file level or feature level.\n\n"
@@ -176,6 +234,47 @@ REQUIRED JSON SCHEMA:
 }
 """
 
+_MODE_ENGINE_PROMPT_TEMPLATE = """\
+
+MODE ENGINE CONTRACT
+- contract_id: {contract_id}
+- enforcement_point: mode_engine
+- execution_scope: BOTH
+- mutation_permission: READ_ONLY
+- ai_is_proposal_only: true
+- system_is_final_authority: true
+
+SELECTED MODES
+{selected_modes}
+
+STACKING RULES
+- Combine behavior rules from every selected mode.
+- Merge all output requirements.
+- Enforce the strictest constraints across the stack.
+- Treat strict_mode as mandatory for critical flows.
+
+RESPONSE RULES
+- Return valid JSON only.
+- Do not use markdown or prose outside the JSON object.
+- Include "contract_id" and "selected_modes" in the JSON output.
+- The JSON must satisfy every required field for the selected modes.
+
+REQUIRED FIELDS BY MODE
+{required_fields}
+
+BEHAVIOR RULES
+{behavior_rules}
+
+CONSTRAINTS
+{constraints}
+
+VALIDATION RULES
+- structural_validation: all required fields must be present and the output must be a JSON object.
+- logical_validation: prediction_mode requires at least two alternatives; debug_mode requires non-empty reasoning_steps.
+- compliance_validation: if missing_data_list is non-empty, explicit_data_status must be "insufficient_data" or "partial_data".
+- If data is missing, clearly say so instead of guessing.
+"""
+
 # Keywords that indicate the user wants up-to-date / current information.
 _RECENCY_PATTERN = re.compile(
     r"\b(latest|current|today|now|recent|news|price|release|just|trending|"
@@ -222,6 +321,15 @@ class ChatPostRequest(BaseModel):
     message: str
     context: ChatContext = Field(default_factory=ChatContext)
     agent_mode: bool = False
+    modes: list[
+        Literal[
+            "prediction_mode",
+            "strict_mode",
+            "debug_mode",
+            "builder_mode",
+            "audit_mode",
+        ]
+    ] = Field(default_factory=list)
 
     @field_validator("message")
     @classmethod
@@ -232,6 +340,22 @@ class ChatPostRequest(BaseModel):
         return text
 
 
+class ChatModeEngineResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    modes: list[
+        Literal[
+            "prediction_mode",
+            "strict_mode",
+            "debug_mode",
+            "builder_mode",
+            "audit_mode",
+        ]
+    ] = Field(default_factory=list)
+    contract_id: str | None = None
+
+
 class ChatPostResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -240,6 +364,7 @@ class ChatPostResponse(BaseModel):
     tools_available: list[str]
     user_message: ChatMessageResponse
     assistant_message: ChatMessageResponse
+    mode_engine: ChatModeEngineResponse = Field(default_factory=ChatModeEngineResponse)
 
 
 class ChatEditRequest(BaseModel):
@@ -583,6 +708,254 @@ def _build_retrieval_system_prompt(db, search_results: list[dict[str, Any]]) -> 
     return base + retrieval_section
 
 
+class ModeEngineValidationError(ValueError):
+    """Raised when a mode-engine payload fails validation."""
+
+
+def _normalize_mode_engine_modes(
+    requested_modes: list[str], enabled: bool
+) -> list[Literal["prediction_mode", "strict_mode", "debug_mode", "builder_mode", "audit_mode"]]:
+    if not enabled:
+        return []
+
+    deduped: list[str] = []
+    for mode in requested_modes:
+        if mode not in deduped:
+            deduped.append(mode)
+
+    if _MODE_ENGINE_DEFAULT_MODE not in deduped:
+        deduped.insert(0, _MODE_ENGINE_DEFAULT_MODE)
+
+    return [
+        mode
+        for mode in deduped
+        if mode in _MODE_ENGINE_ALLOWED_MODES
+    ]
+
+
+def _mode_engine_required_fields(
+    selected_modes: list[str],
+) -> list[str]:
+    required_fields: list[str] = ["contract_id", "selected_modes"]
+    for mode in selected_modes:
+        for field_name in _MODE_ENGINE_MODE_RULES[mode]["output_requirements"]:
+            if field_name not in required_fields:
+                required_fields.append(field_name)
+    return required_fields
+
+
+def _build_mode_engine_prompt(selected_modes: list[str]) -> str:
+    required_lines = []
+    behavior_lines = []
+    constraint_lines = []
+    for mode in selected_modes:
+        rules = _MODE_ENGINE_MODE_RULES[mode]
+        required_lines.append(
+            f"- {mode}: {', '.join(rules['output_requirements'])}"
+        )
+        behavior_lines.extend(f"- {mode}: {rule}" for rule in rules["behavior_rules"])
+        constraint_lines.extend(f"- {mode}: {rule}" for rule in rules["constraints"])
+
+    return _MODE_ENGINE_PROMPT_TEMPLATE.format(
+        contract_id=_MODE_ENGINE_CONTRACT_ID,
+        selected_modes="\n".join(f"- {mode}" for mode in selected_modes),
+        required_fields="\n".join(required_lines),
+        behavior_rules="\n".join(behavior_lines),
+        constraints="\n".join(constraint_lines),
+    )
+
+
+def _strip_json_code_fences(raw_text: str) -> str:
+    if not raw_text.startswith("```"):
+        return raw_text.strip()
+
+    lines = raw_text.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _mode_engine_validation_errors(
+    payload: dict[str, Any],
+    selected_modes: list[str],
+) -> list[str]:
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return ["output must be a JSON object"]
+
+    if payload.get("contract_id") != _MODE_ENGINE_CONTRACT_ID:
+        errors.append(f'contract_id must equal "{_MODE_ENGINE_CONTRACT_ID}"')
+
+    response_modes = payload.get("selected_modes")
+    if response_modes != selected_modes:
+        errors.append("selected_modes must exactly match the enforced mode stack")
+
+    for field_name in _mode_engine_required_fields(selected_modes):
+        if field_name not in payload:
+            errors.append(f"missing required field: {field_name}")
+
+    def _require_list(name: str, minimum: int = 0) -> list[Any]:
+        value = payload.get(name)
+        if not isinstance(value, list):
+            errors.append(f"{name} must be a list")
+            return []
+        if len(value) < minimum:
+            errors.append(f"{name} must contain at least {minimum} item(s)")
+        return value
+
+    def _require_non_empty_string(name: str) -> None:
+        value = payload.get(name)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{name} must be a non-empty string")
+
+    if "strict_mode" in selected_modes:
+        _require_non_empty_string("explicit_data_status")
+        missing_data_list = _require_list("missing_data_list")
+        explicit_data_status = str(payload.get("explicit_data_status", "")).strip().lower()
+        if missing_data_list and explicit_data_status not in {"insufficient_data", "partial_data"}:
+            errors.append(
+                'explicit_data_status must be "insufficient_data" or "partial_data" when missing_data_list is non-empty'
+            )
+
+    if "prediction_mode" in selected_modes:
+        _require_list("assumptions")
+        _require_list("alternatives", minimum=2)
+        confidence = payload.get("confidence")
+        if not isinstance(confidence, (int, float, str)) or (
+            isinstance(confidence, str) and not confidence.strip()
+        ):
+            errors.append("confidence must be a number or non-empty string")
+        _require_list("missing_data")
+
+    if "debug_mode" in selected_modes:
+        _require_non_empty_string("root_cause")
+        _require_list("reasoning_steps", minimum=1)
+        _require_list("failure_paths")
+
+    if "builder_mode" in selected_modes:
+        if payload.get("system_structure") in (None, "", []):
+            errors.append("system_structure must be present")
+        _require_list("components")
+        _require_list("relationships")
+
+    if "audit_mode" in selected_modes:
+        _require_list("risks")
+        _require_list("inconsistencies")
+        _require_list("assumptions")
+
+    return errors
+
+
+def _validate_mode_engine_payload(
+    raw_text: str,
+    selected_modes: list[str],
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(_strip_json_code_fences(raw_text))
+    except json.JSONDecodeError as exc:
+        raise ModeEngineValidationError(f"invalid JSON: {exc.msg}") from exc
+
+    errors = _mode_engine_validation_errors(payload, selected_modes)
+    if errors:
+        raise ModeEngineValidationError("; ".join(errors))
+    return payload
+
+
+def _build_mode_engine_fallback(
+    message: str,
+    selected_modes: list[str],
+    reason: str,
+) -> dict[str, Any]:
+    fallback: dict[str, Any] = {
+        "contract_id": _MODE_ENGINE_CONTRACT_ID,
+        "selected_modes": selected_modes,
+        "explicit_data_status": "insufficient_data",
+        "missing_data_list": [reason],
+    }
+
+    if "prediction_mode" in selected_modes:
+        fallback.update(
+            {
+                "assumptions": [],
+                "alternatives": [
+                    "Wait for additional verified data before deciding on a single path.",
+                    "Request more context and re-run the mode engine with the missing inputs.",
+                ],
+                "confidence": 0.0,
+                "missing_data": [reason],
+            }
+        )
+    if "debug_mode" in selected_modes:
+        fallback.update(
+            {
+                "root_cause": "Insufficient verified data to identify a root cause.",
+                "reasoning_steps": [
+                    "The validator could not accept an answer backed by sufficient data.",
+                    "Additional evidence is required before a causal chain can be confirmed.",
+                ],
+                "failure_paths": [message[:200]],
+            }
+        )
+    if "builder_mode" in selected_modes:
+        fallback.update(
+            {
+                "system_structure": "Insufficient verified data to produce a structured design.",
+                "components": [],
+                "relationships": [],
+            }
+        )
+    if "audit_mode" in selected_modes:
+        fallback.update(
+            {
+                "risks": ["Proceeding without verified data could produce incorrect conclusions."],
+                "inconsistencies": [],
+                "assumptions": ["The available data is incomplete and cannot be trusted for a final answer."],
+            }
+        )
+    return fallback
+
+
+def _call_openai_chat_with_mode_engine(
+    message: str,
+    api_key: str,
+    selected_modes: list[str],
+    history: list[Any] | None = None,
+    system_prompt: str | None = None,
+) -> str:
+    effective_prompt = (system_prompt or _CHAT_SYSTEM_PROMPT) + _build_mode_engine_prompt(
+        selected_modes
+    )
+    attempt_message = message
+
+    for _ in range(3):
+        reply = _call_openai_chat(
+            attempt_message,
+            api_key,
+            history=history,
+            system_prompt=effective_prompt,
+        )
+        try:
+            payload = _validate_mode_engine_payload(reply, selected_modes)
+            return json.dumps(payload, indent=2, sort_keys=True)
+        except ModeEngineValidationError as exc:
+            attempt_message = (
+                f"Original user request:\n{message}\n\n"
+                f"Your previous response was rejected by the validator for these reasons:\n"
+                f"- {exc}\n\n"
+                "Return corrected JSON only."
+            )
+
+    fallback = _build_mode_engine_fallback(
+        message,
+        selected_modes,
+        "The AI response did not pass mode-engine validation.",
+    )
+    return json.dumps(fallback, indent=2, sort_keys=True)
+
+
 # ---------------------------------------------------------------------------
 # INTERACTION_LAYER_V2 helpers
 # ---------------------------------------------------------------------------
@@ -800,6 +1173,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     agent_mode = request.agent_mode or (
         http_request.headers.get("X-Agent-Mode", "0") == "1"
     )
+    mode_engine_enabled = agent_mode or "modes" in (body or {})
+    selected_modes = _normalize_mode_engine_modes(request.modes, mode_engine_enabled)
 
     db = _db_session()
     try:
@@ -810,7 +1185,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
         if not openai_api_key:
-            reply = _stub_reply(message)
+            if selected_modes:
+                reply = json.dumps(
+                    _build_mode_engine_fallback(
+                        message,
+                        selected_modes,
+                        "OPENAI_API_KEY is not configured; AI proposal unavailable.",
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+            else:
+                reply = _stub_reply(message)
         else:
             # Optionally retrieve web results for recency-sensitive queries.
             search_results: list[dict[str, Any]] = []
@@ -833,7 +1219,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 system_prompt = _build_chat_system_prompt(db)
 
             # When agent_mode is enabled, append an instruction to use ARTIFACT format.
-            if agent_mode:
+            if agent_mode and not selected_modes:
                 system_prompt += (
                     "\n\nRespond using structured ARTIFACT sections. "
                     "Each section must begin on its own line as: ARTIFACT_<NAME>: <value>. "
@@ -842,12 +1228,21 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 )
 
             try:
-                reply = _call_openai_chat(
-                    message,
-                    openai_api_key,
-                    history[:-1] if history else [],
-                    system_prompt=system_prompt,
-                )
+                if selected_modes:
+                    reply = _call_openai_chat_with_mode_engine(
+                        message,
+                        openai_api_key,
+                        selected_modes,
+                        history=history[:-1] if history else [],
+                        system_prompt=system_prompt,
+                    )
+                else:
+                    reply = _call_openai_chat(
+                        message,
+                        openai_api_key,
+                        history[:-1] if history else [],
+                        system_prompt=system_prompt,
+                    )
             except httpx.TimeoutException:
                 return _error(
                     502,
@@ -871,7 +1266,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 )
 
             # Append citations to the reply if retrieval was performed.
-            if search_results:
+            if search_results and not selected_modes:
                 reply += _format_citations(search_results)
 
         assistant_message = _persist_message(db, "assistant", reply, context)
@@ -881,6 +1276,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 tools_available=_TOOLS_AVAILABLE,
                 user_message=user_message,
                 assistant_message=assistant_message,
+                mode_engine=ChatModeEngineResponse(
+                    enabled=bool(selected_modes),
+                    modes=selected_modes,
+                    contract_id=(
+                        _MODE_ENGINE_CONTRACT_ID if selected_modes else None
+                    ),
+                ),
             )
         )
     finally:
