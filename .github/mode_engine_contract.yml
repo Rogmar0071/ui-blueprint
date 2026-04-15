@@ -1,14 +1,20 @@
 # MODE ENGINE GOVERNANCE CONTRACT
 # ---------------------------------
-# Merged contract: MODE_ENGINE_EXECUTION_V1 + MODE_ENGINE_ENFORCEMENT_PATCH_V1
+# Merged contract:
+#   MODE_ENGINE_EXECUTION_V1
+#   MODE_ENGINE_ENFORCEMENT_PATCH_V1
+#   MODE_ENGINE_MUTATION_SIMULATION_V2
 #
 # This file is READ-ONLY at runtime. The system never writes to it.
 # It defines the authoritative rules for all mode-engine-governed AI interactions.
 
 contract_id: MODE_ENGINE_EXECUTION_V1
 patch_id: MODE_ENGINE_ENFORCEMENT_PATCH_V1
+mutation_contract_id: MODE_ENGINE_MUTATION_SIMULATION_V2
 patch_type: AUGMENTATION
-version: "1.1"
+mutation_class: GOVERNANCE
+mutation_reversibility: FORWARD_ONLY
+version: "2.0"
 
 # ---------------------------------------------------------------------------
 # Modes
@@ -256,3 +262,208 @@ outcome_guarantees:
   - full_traceability
   - controlled_ai_behavior
   - consistent_mode_compliance
+
+# ===========================================================================
+# MODE_ENGINE_MUTATION_SIMULATION_V2
+# ===========================================================================
+
+mutation_simulation_v2:
+  id: MODE_ENGINE_MUTATION_SIMULATION_V2
+  class: GOVERNANCE
+  reversibility: FORWARD_ONLY
+  execution_scope: BOTH
+  mutation_permission: MUTATION_ALLOWED
+
+  dependencies:
+    requires:
+      - MODE_ENGINE_EXECUTION_V1
+      - MODE_ENGINE_ENFORCEMENT_PATCH_V1
+
+  system_flow:
+    - user_intent
+    - mode_engine
+    - apply_mode_engine_constraints
+    - ai_proposal
+    - mutation_contract
+    - simulation_layer
+    - enforcement_layer
+    - validation_layer
+    - git_commit
+    - deployment_trigger
+
+  mandatory_mode_stack:
+    enforced_for_mutations:
+      - strict_mode
+      - prediction_mode
+      - builder_mode
+
+  mode_engine_enforcement:
+    required: true
+    block_if:
+      - mode_engine_not_applied
+      - response_not_validated_by_mode_engine
+
+  mutation_contract:
+    description: >
+      AI must return a structured mutation proposal. No free-form responses allowed.
+    required_fields:
+      - target_files
+      - operation_type
+      - proposed_changes
+      - assumptions
+      - alternatives
+      - confidence
+      - risks
+      - missing_data
+    constraints:
+      - no_empty_fields
+      - no_undeclared_assumptions
+      - no_single_solution_bias
+
+  simulation_layer:
+    description: >
+      Pre-execution simulation to predict impact, detect failures,
+      and validate dependency integrity before build.
+    required: true
+    simulation_steps:
+      - dependency_surface_mapping
+      - impact_analysis
+      - failure_prediction
+      - alternative_path_evaluation
+    outputs_required:
+      - impacted_files
+      - risk_level
+      - predicted_failures
+      - safe_to_execute
+    risk_levels:
+      - low
+      - medium
+      - high
+
+  dependency_enforcement:
+    block_if:
+      - impacted_files_unaccounted_for
+      - cross_module_dependency_break_detected
+
+  enforcement_layer:
+    description: >
+      Hard execution boundary enforcing simulation and risk outcomes.
+    simulation_enforcement:
+      block_execution_if:
+        - safe_to_execute == false
+      require_explicit_override_if:
+        - risk_level == high
+
+  override_protocol:
+    required_fields:
+      - justification
+      - acknowledged_risks
+      - override_scope
+    block_if:
+      - override_missing_required_fields
+
+  validation_layer:
+    stage_0_pre_generation:
+      checks:
+        - input_not_empty
+        - required_context_present
+    stage_1_structural:
+      checks:
+        - mutation_contract_complete
+        - required_fields_present
+    stage_2_logical:
+      checks:
+        - assumptions_declared
+        - alternatives_exist
+        - confidence_present
+    stage_3_simulation:
+      checks:
+        - simulation_completed
+        - safe_to_execute == true
+    stage_4_system:
+      checks:
+        - files_exist_or_valid_for_creation
+        - paths_within_allowed_scope
+        - no_protected_files_modified
+    stage_5_build:
+      checks:
+        - build_successful
+      on_failure:
+        - abort_mutation
+        - revert_changes
+    failure_handling:
+      max_retries: 2
+      on_failure:
+        - re_prompt_ai_with:
+            - validation_feedback
+            - simulation_feedback
+      on_exhaustion:
+        - return_structured_failure
+
+  file_scope_control:
+    allowed_paths:
+      - apps/
+      - core/
+      - scripts/
+    restricted_paths:
+      - .env
+      - secrets/
+      - infra/credentials/
+
+  git_integration:
+    provider: github
+    repo_role: source_of_truth
+    commit_rules:
+      - require_validated_mutation
+      - require_simulation_pass
+      - require_mode_engine_validation
+    push_rules:
+      - block_on_validation_failure
+      - block_on_simulation_failure
+      - block_on_build_failure
+      - block_on_enforcement_failure
+
+  deployment:
+    provider: render
+    trigger:
+      - git_push
+    constraint:
+      - only_validated_simulated_enforced_commits_trigger_deploy
+
+  audit_layer:
+    logging:
+      - user_intent
+      - selected_modes
+      - mutation_contract
+      - simulation_results
+      - validation_results
+      - enforcement_results
+      - build_status
+      - commit_id
+    traceability:
+      enabled: true
+
+  failure_modes:
+    prohibited:
+      - direct_ai_commit
+      - unvalidated_mutation_execution
+      - unsimulated_execution
+      - unenforced_simulation_results
+      - hidden_assumptions
+      - unrestricted_file_access
+
+  governance_invariants:
+    - ai_is_proposal_only
+    - mode_engine_is_mandatory
+    - simulation_precedes_execution
+    - enforcement_precedes_execution
+    - validation_precedes_deployment
+    - deployment_requires_valid_commit
+
+  outcome_guarantees:
+    - controlled_code_mutation
+    - pre_execution_failure_detection
+    - enforced_execution_safety
+    - reduced_hallucination_in_execution
+    - deterministic_deployment_pipeline
+    - full_auditability

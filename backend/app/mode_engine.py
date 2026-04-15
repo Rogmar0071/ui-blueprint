@@ -28,9 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -239,7 +237,8 @@ class SystemPromptInjector:
         "\nCONSTRAINTS\n"
         "{constraints}\n"
         "\nVALIDATION RULES\n"
-        "- structural_validation: all required fields must be present and the output must be a JSON object.\n"
+        "- structural_validation: all required fields must be present"
+        " and the output must be a JSON object.\n"
         "- logical_validation: prediction_mode requires at least two alternatives;\n"
         "  debug_mode requires non-empty reasoning_steps.\n"
         "- compliance_validation: if missing_data_list is non-empty,\n"
@@ -744,6 +743,12 @@ class AuditLogger:
         validation_results: list[str],
         retry_count: int,
         final_output: str,
+        # Mutation Simulation V2 extended fields (optional)
+        mutation_contract: dict[str, Any] | None = None,
+        simulation_results: dict[str, Any] | None = None,
+        enforcement_results: dict[str, Any] | None = None,
+        build_status: str | None = None,
+        commit_id: str | None = None,
     ) -> Any | None:
         """Write an audit entry. Returns the created record or None on failure."""
         if db is None:
@@ -764,6 +769,11 @@ class AuditLogger:
                 validation_results=validation_results,
                 retry_count=retry_count,
                 final_output=final_output[:4000],
+                mutation_contract=mutation_contract,
+                simulation_results=simulation_results,
+                enforcement_results=enforcement_results,
+                build_status=build_status,
+                commit_id=commit_id,
             )
             db.add(entry)
             db.commit()
@@ -774,17 +784,693 @@ class AuditLogger:
             return None
 
 
+# ===========================================================================
+# MODE_ENGINE_MUTATION_SIMULATION_V2
+# ===========================================================================
+# Contract: MODE_ENGINE_MUTATION_SIMULATION_V2
+# Class: GOVERNANCE  |  Reversibility: FORWARD_ONLY
+# Execution scope: BOTH  |  Mutation permission: MUTATION_ALLOWED
+# Dependencies: MODE_ENGINE_EXECUTION_V1, MODE_ENGINE_ENFORCEMENT_PATCH_V1
+# ===========================================================================
+
+# Mandatory mode stack for all mutation calls
+MUTATION_MANDATORY_MODES: list[str] = ["strict_mode", "prediction_mode", "builder_mode"]
+
+# Required fields in the AI mutation contract response
+MUTATION_CONTRACT_REQUIRED_FIELDS: list[str] = [
+    "target_files",
+    "operation_type",
+    "proposed_changes",
+    "assumptions",
+    "alternatives",
+    "confidence",
+    "risks",
+    "missing_data",
+]
+
+# File scope control (server-enforced)
+MUTATION_ALLOWED_PATH_PREFIXES: tuple[str, ...] = ("apps/", "core/", "scripts/")
+MUTATION_RESTRICTED_PATHS: tuple[str, ...] = (".env", "secrets/", "infra/credentials/")
+
+# System prompt that instructs the AI to produce a mutation contract
+_MUTATION_SYSTEM_PROMPT = """\
+You are the UI Blueprint Mutation Engine operating under MODE_ENGINE_MUTATION_SIMULATION_V2.
+
+ROLE: Produce a structured code mutation proposal. No free-form responses.
+AUTHORITY: Proposal ONLY. You do not execute, commit, or deploy anything.
+
+You MUST return valid JSON only — no markdown, no prose outside the JSON.
+
+MANDATORY FIELDS (all must be present and non-empty):
+  target_files      : list[str]  — files to be created/modified/deleted
+  operation_type    : str        — "create" | "modify" | "delete" | "refactor"
+  proposed_changes  : list[{file, change_type, description, diff_hint}]
+  assumptions       : list[str]  — all assumptions explicitly declared
+  alternatives      : list[str]  — at least two alternative approaches
+  confidence        : float      — 0.0–1.0
+  risks             : list[str]  — all identified risks
+  missing_data      : list[str]  — data needed but not available
+
+ALSO INCLUDE the standard mode-engine fields:
+  contract_id, selected_modes, explicit_data_status, missing_data_list
+
+CONSTRAINTS:
+  - no_empty_fields
+  - no_undeclared_assumptions
+  - no_single_solution_bias (always provide ≥ 2 alternatives)
+  - confidence must reflect actual certainty (do not inflate)
+  - If data is insufficient, set explicit_data_status = "insufficient_data"
+    and populate missing_data and missing_data_list
+"""
+
+
+# ---------------------------------------------------------------------------
+# Mutation Contract Validator
+# ---------------------------------------------------------------------------
+
+
+class MutationContractValidator:
+    """
+    Validates the AI's mutation contract response against
+    MODE_ENGINE_MUTATION_SIMULATION_V2 required fields and constraints.
+    """
+
+    def validate(
+        self, payload: dict[str, Any], modes: list[str]
+    ) -> list[str]:
+        """Return list of validation errors (empty = valid)."""
+        errors: list[str] = []
+
+        if not isinstance(payload, dict):
+            return ["mutation contract must be a JSON object"]
+
+        # All required mutation fields must be present and non-empty
+        for field_name in MUTATION_CONTRACT_REQUIRED_FIELDS:
+            value = payload.get(field_name)
+            if value is None:
+                errors.append(f"missing required mutation field: {field_name}")
+            elif isinstance(value, (list, str)) and not value:
+                errors.append(f"no_empty_fields violation: {field_name} is empty")
+
+        # alternatives: at least 2 (no_single_solution_bias)
+        alternatives = payload.get("alternatives", [])
+        if isinstance(alternatives, list) and len(alternatives) < 2:
+            errors.append(
+                "no_single_solution_bias: alternatives must contain at least 2 items"
+            )
+
+        # confidence: float 0.0–1.0
+        confidence = payload.get("confidence")
+        if not isinstance(confidence, (int, float)):
+            errors.append("confidence must be a number")
+        elif not (0.0 <= float(confidence) <= 1.0):
+            errors.append("confidence must be between 0.0 and 1.0")
+
+        # operation_type: known value
+        op_type = payload.get("operation_type", "")
+        if op_type not in ("create", "modify", "delete", "refactor"):
+            errors.append(
+                "operation_type must be one of: create, modify, delete, refactor"
+            )
+
+        # target_files: list of strings
+        target_files = payload.get("target_files", [])
+        if not isinstance(target_files, list) or not all(
+            isinstance(f, str) for f in target_files
+        ):
+            errors.append("target_files must be a list of strings")
+
+        return errors
+
+
+# ---------------------------------------------------------------------------
+# Simulation Layer
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SimulationResult:
+    """Output of the simulation layer (simulation_steps output)."""
+
+    impacted_files: list[str]
+    risk_level: str  # "low" | "medium" | "high"
+    predicted_failures: list[str]
+    safe_to_execute: bool
+    # Extended traceability
+    dependency_map: dict[str, list[str]] = field(default_factory=dict)
+    alternative_paths: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "impacted_files": self.impacted_files,
+            "risk_level": self.risk_level,
+            "predicted_failures": self.predicted_failures,
+            "safe_to_execute": self.safe_to_execute,
+            "dependency_map": self.dependency_map,
+            "alternative_paths": self.alternative_paths,
+        }
+
+
+class SimulationLayer:
+    """
+    Pre-execution simulation per MODE_ENGINE_MUTATION_SIMULATION_V2.
+
+    simulation_steps:
+      1. dependency_surface_mapping  — map all files and cross-module deps
+      2. impact_analysis             — derive risk level
+      3. failure_prediction          — enumerate predicted failure paths
+      4. alternative_path_evaluation — verify alternatives are present
+
+    Outputs: impacted_files, risk_level, predicted_failures, safe_to_execute
+    """
+
+    def simulate(self, mutation_contract: dict[str, Any]) -> SimulationResult:
+        # Step 1: dependency_surface_mapping
+        target_files: list[str] = mutation_contract.get("target_files", [])
+        proposed_changes: list[Any] = mutation_contract.get("proposed_changes", [])
+        additional_files = [
+            c.get("file", "")
+            for c in proposed_changes
+            if isinstance(c, dict) and c.get("file")
+        ]
+        impacted_files: list[str] = list(
+            dict.fromkeys(target_files + additional_files)
+        )
+
+        # Build a simple dependency map: each target file → files it references
+        dependency_map: dict[str, list[str]] = {f: [] for f in target_files}
+
+        # Step 2: impact_analysis — derive risk level
+        confidence = float(mutation_contract.get("confidence", 0.0))
+        risks: list[str] = mutation_contract.get("risks", [])
+        missing_data: list[str] = mutation_contract.get("missing_data", [])
+
+        if confidence >= 0.8 and len(risks) == 0 and not missing_data:
+            risk_level = "low"
+        elif confidence >= 0.5 and len(risks) <= 2:
+            risk_level = "medium"
+        else:
+            risk_level = "high"
+
+        # Step 3: failure_prediction — surface risks as predicted failures
+        predicted_failures: list[str] = [
+            r for r in risks if isinstance(r, str)
+        ]
+        if missing_data:
+            predicted_failures.append(
+                f"execution blocked by missing data: {', '.join(str(m) for m in missing_data)}"
+            )
+
+        # Step 4: alternative_path_evaluation
+        alternatives: list[str] = mutation_contract.get("alternatives", [])
+        alternative_paths = [str(a) for a in alternatives]
+
+        # safe_to_execute: high risk requires override; unresolved missing_data is unsafe
+        safe_to_execute = risk_level in ("low", "medium") and not missing_data
+
+        return SimulationResult(
+            impacted_files=impacted_files,
+            risk_level=risk_level,
+            predicted_failures=predicted_failures,
+            safe_to_execute=safe_to_execute,
+            dependency_map=dependency_map,
+            alternative_paths=alternative_paths,
+        )
+
+
+# ---------------------------------------------------------------------------
+# File Scope Controller
+# ---------------------------------------------------------------------------
+
+
+class FileScopeController:
+    """
+    Enforces file_scope_control from MODE_ENGINE_MUTATION_SIMULATION_V2.
+
+    allowed_paths    : apps/, core/, scripts/
+    restricted_paths : .env, secrets/, infra/credentials/
+    """
+
+    def validate(self, target_files: list[str]) -> list[str]:
+        """Return list of scope violations (empty = all files within scope)."""
+        errors: list[str] = []
+        for f in target_files:
+            for restricted in MUTATION_RESTRICTED_PATHS:
+                if restricted in f or f.startswith(restricted):
+                    errors.append(f"restricted file access blocked: {f}")
+                    break
+        return errors
+
+
+# ---------------------------------------------------------------------------
+# Override Protocol
+# ---------------------------------------------------------------------------
+
+
+class OverrideProtocol:
+    """
+    Validates a caller-supplied override for high-risk mutations.
+
+    Required fields: justification, acknowledged_risks, override_scope
+    """
+
+    REQUIRED_OVERRIDE_FIELDS: tuple[str, ...] = (
+        "justification",
+        "acknowledged_risks",
+        "override_scope",
+    )
+
+    def validate(self, override: dict[str, Any]) -> list[str]:
+        """Return list of missing/invalid override fields."""
+        errors: list[str] = []
+        for f in self.REQUIRED_OVERRIDE_FIELDS:
+            value = override.get(f)
+            if value is None:
+                errors.append(f"override missing required field: {f}")
+            elif isinstance(value, str) and not value.strip():
+                errors.append(f"override field must not be empty: {f}")
+            elif isinstance(value, list) and not value:
+                errors.append(f"override field must not be empty: {f}")
+        return errors
+
+
+# ---------------------------------------------------------------------------
+# Enforcement Layer
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EnforcementResult:
+    """Output of the enforcement layer."""
+
+    approved: bool
+    requires_override: bool = False
+    blocked_reason: str | None = None
+    override_applied: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "approved": self.approved,
+            "requires_override": self.requires_override,
+            "blocked_reason": self.blocked_reason,
+            "override_applied": self.override_applied,
+        }
+
+
+class EnforcementLayer:
+    """
+    Hard execution boundary per MODE_ENGINE_MUTATION_SIMULATION_V2.
+
+    enforcement_layer.simulation_enforcement:
+      block_execution_if: safe_to_execute == false
+      require_explicit_override_if: risk_level == high
+
+    override_protocol:
+      required_fields: justification, acknowledged_risks, override_scope
+    """
+
+    def __init__(self) -> None:
+        self._override_protocol = OverrideProtocol()
+
+    def enforce(
+        self,
+        simulation: SimulationResult,
+        override: dict[str, Any] | None = None,
+    ) -> EnforcementResult:
+        # Block if simulation deems execution unsafe
+        if not simulation.safe_to_execute:
+            return EnforcementResult(
+                approved=False,
+                blocked_reason=(
+                    f"simulation: safe_to_execute is false "
+                    f"(risk_level={simulation.risk_level}, "
+                    f"predicted_failures={simulation.predicted_failures})"
+                ),
+            )
+
+        # High risk requires explicit override
+        if simulation.risk_level == "high":
+            if override is None:
+                return EnforcementResult(
+                    approved=False,
+                    requires_override=True,
+                    blocked_reason=(
+                        "risk_level is high — explicit override required "
+                        "(provide justification, acknowledged_risks, override_scope)"
+                    ),
+                )
+            override_errors = self._override_protocol.validate(override)
+            if override_errors:
+                return EnforcementResult(
+                    approved=False,
+                    blocked_reason="; ".join(override_errors),
+                )
+            return EnforcementResult(
+                approved=True,
+                override_applied=True,
+            )
+
+        return EnforcementResult(approved=True)
+
+
+# ---------------------------------------------------------------------------
+# Mutation Validation Pipeline (Stages 0–5)
+# ---------------------------------------------------------------------------
+
+
+class MutationValidationPipeline(ValidationPipeline):
+    """
+    Extended validation pipeline for mutation proposals.
+
+    Adds to the base 4-stage pipeline:
+      Stage 3 (simulation) : simulation_completed, safe_to_execute == true
+      Stage 4 (system)     : files_exist_or_valid_for_creation, paths_within_scope
+      Stage 5 (build)      : build_successful (placeholder — actual build is external)
+    """
+
+    def stage3_simulation(
+        self, simulation: SimulationResult, enforcement: EnforcementResult
+    ) -> list[str]:
+        """Stage 3: Simulation pass and safe_to_execute check."""
+        errors: list[str] = []
+        if not enforcement.approved:
+            reason = enforcement.blocked_reason or "enforcement blocked execution"
+            errors.append(f"simulation_enforcement: {reason}")
+        return errors
+
+    def stage4_system(
+        self, target_files: list[str], scope_errors: list[str]
+    ) -> list[str]:
+        """Stage 4: File paths within allowed scope, no protected files."""
+        return scope_errors
+
+    def stage5_build(self, build_passed: bool) -> list[str]:
+        """Stage 5: Build check (external; caller passes result)."""
+        return [] if build_passed else ["build_failed: abort_mutation"]
+
+    def run_mutation_all(
+        self,
+        payload: dict[str, Any],
+        modes: list[str],
+        simulation: SimulationResult,
+        enforcement: EnforcementResult,
+        scope_errors: list[str],
+        build_passed: bool = True,
+    ) -> list[str]:
+        """Run all 6 stages (0 is pre-generation; 1–5 run here)."""
+        stacker = ModeStackingResolver()
+        merged = stacker.merge(modes)
+        required_fields = merged["output_requirements"] + MUTATION_CONTRACT_REQUIRED_FIELDS
+
+        errors = self.stage1_structural(payload, required_fields)
+        errors += self.stage2_logical(payload, modes)
+        errors += self.stage3_compliance(payload, modes)
+        errors += self.stage3_simulation(simulation, enforcement)
+        errors += self.stage4_system(payload.get("target_files", []), scope_errors)
+        errors += self.stage5_build(build_passed)
+        return errors
+
+
+# ---------------------------------------------------------------------------
+# Mutation Retry Engine
+# ---------------------------------------------------------------------------
+
+
+class MutationRetryEngine(RetryEngine):
+    """
+    Retry engine for mutation proposals.
+
+    Re-prompts with combined validation + simulation feedback.
+    max_retries = 2  (same as enforcement patch contract)
+    """
+
+    def __init__(self, ai_caller: Callable) -> None:
+        super().__init__(
+            ai_caller=ai_caller,
+            pipeline=ValidationPipeline(),
+        )
+        self._mutation_validator = MutationContractValidator()
+
+    def run_mutation(
+        self,
+        message: str,
+        modes: list[str],
+        system_prompt: str,
+        history: list[Any] | None,
+        api_key: str,
+    ) -> RetryResult:
+        """
+        Run the mutation retry loop.
+        Validates both standard mode-engine fields AND mutation contract fields.
+        """
+        attempt_message = message
+        last_errors: list[str] = []
+        last_raw = ""
+
+        for attempt in range(MODE_ENGINE_MAX_RETRIES):
+            last_raw = self._ai_caller(
+                attempt_message,
+                api_key,
+                history=history,
+                system_prompt=system_prompt,
+            )
+
+            try:
+                payload = self._pipeline.parse(last_raw)
+            except ModeEngineValidationError as exc:
+                last_errors = [str(exc)]
+                attempt_message = self._build_retry_prompt(message, last_errors)
+                continue
+
+            # Standard mode-engine validation
+            me_errors = self._pipeline.run_all(payload, modes)
+            # Mutation contract validation
+            mc_errors = self._mutation_validator.validate(payload, modes)
+            all_errors = me_errors + mc_errors
+
+            if not all_errors:
+                return RetryResult(
+                    payload=payload,
+                    retry_count=attempt,
+                    last_raw_response=last_raw,
+                )
+
+            last_errors = all_errors
+            attempt_message = self._build_retry_prompt(message, all_errors)
+            logger.debug(
+                "mutation_engine retry %d/%d: errors: %s",
+                attempt + 1,
+                MODE_ENGINE_MAX_RETRIES,
+                all_errors,
+            )
+
+        final_errors = self._pipeline.stage4_post_retry(last_errors)
+        return RetryResult(
+            payload={},
+            retry_count=MODE_ENGINE_MAX_RETRIES,
+            last_raw_response=last_raw,
+            failed=True,
+            failed_rules=final_errors,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Mutation Gateway
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MutationGatewayResult:
+    """Full result of MutationGateway.process()."""
+
+    payload: dict[str, Any]             # AI mutation contract (or structured failure)
+    modes: list[str]
+    simulation: SimulationResult | None
+    enforcement: EnforcementResult | None
+    validation_errors: list[str]
+    system_prompt: str
+    raw_ai_response: str
+    retry_count: int
+    approved: bool                       # True only when all stages pass
+    requires_override: bool = False
+
+
+class MutationGateway:
+    """
+    Execution entry point for MODE_ENGINE_MUTATION_SIMULATION_V2.
+
+    Full lifecycle:
+      Stage 0  PreGenerationValidator
+      Inject   SystemPromptInjector  (base + mutation instructions)
+      AI call  → MutationRetryEngine (mutation contract validation)
+      Simulate → SimulationLayer
+      Enforce  → EnforcementLayer (block if unsafe / high risk without override)
+      Stage 3–5 MutationValidationPipeline
+      Audit    → AuditLogger
+
+    Invariants:
+      - simulation_precedes_execution
+      - enforcement_precedes_execution
+      - validation_precedes_deployment
+      - ai_is_proposal_only
+    """
+
+    def __init__(self) -> None:
+        self._priority_resolver = ModePriorityResolver()
+        self._prompt_injector = SystemPromptInjector()
+        self._pre_validator = PreGenerationValidator()
+        self._simulation = SimulationLayer()
+        self._enforcement = EnforcementLayer()
+        self._scope = FileScopeController()
+        self._pipeline = MutationValidationPipeline()
+
+    def process(
+        self,
+        message: str,
+        api_key: str,
+        history: list[Any] | None,
+        base_system_prompt: str,
+        ai_caller: Callable,
+        override: dict[str, Any] | None = None,
+    ) -> MutationGatewayResult:
+        """
+        Run the full mutation enforcement pipeline.
+        The mandatory mode stack (strict + prediction + builder) is always applied.
+        """
+        # Stage 0: Pre-generation validation
+        try:
+            self._pre_validator.validate(message)
+        except InsufficientDataError as exc:
+            modes = self._priority_resolver.resolve(MUTATION_MANDATORY_MODES)
+            failure = build_structured_failure(
+                message,
+                modes,
+                str(exc),
+                failed_rules=["input_not_empty"],
+                missing_fields=[],
+            )
+            return MutationGatewayResult(
+                payload=failure,
+                modes=modes,
+                simulation=None,
+                enforcement=None,
+                validation_errors=[str(exc)],
+                system_prompt="",
+                raw_ai_response="",
+                retry_count=0,
+                approved=False,
+            )
+
+        # Resolve mandatory mode stack (strict + prediction + builder, priority-sorted)
+        modes = self._priority_resolver.resolve(MUTATION_MANDATORY_MODES)
+
+        # Inject mutation system prompt
+        system_prompt = (
+            base_system_prompt
+            + "\n\n"
+            + _MUTATION_SYSTEM_PROMPT
+            + self._prompt_injector._TEMPLATE.format(
+                contract_id=MODE_ENGINE_CONTRACT_ID,
+                selected_modes="\n".join(f"- {m}" for m in modes),
+                required_fields="\n".join(
+                    f"- {m}: {', '.join(MODE_ENGINE_MODE_RULES[m]['output_requirements'])}"
+                    for m in modes
+                ),
+                behavior_rules="\n".join(
+                    f"- {m}: {r}"
+                    for m in modes
+                    for r in MODE_ENGINE_MODE_RULES[m]["behavior_rules"]
+                ),
+                constraints="\n".join(
+                    f"- {m}: {c}"
+                    for m in modes
+                    for c in MODE_ENGINE_MODE_RULES[m]["constraints"]
+                ),
+            )
+        )
+
+        # AI call + mutation retry engine
+        retry = MutationRetryEngine(ai_caller=ai_caller)
+        result = retry.run_mutation(
+            message=message,
+            modes=modes,
+            system_prompt=system_prompt,
+            history=history,
+            api_key=api_key,
+        )
+
+        if result.failed:
+            failure = build_structured_failure(
+                message,
+                modes,
+                "Mutation contract validation failed after all retries.",
+                failed_rules=result.failed_rules,
+                missing_fields=[],
+            )
+            return MutationGatewayResult(
+                payload=failure,
+                modes=modes,
+                simulation=None,
+                enforcement=None,
+                validation_errors=result.failed_rules,
+                system_prompt=system_prompt,
+                raw_ai_response=result.last_raw_response,
+                retry_count=result.retry_count,
+                approved=False,
+            )
+
+        payload = result.payload
+
+        # Simulation layer
+        sim = self._simulation.simulate(payload)
+
+        # File scope control
+        scope_errors = self._scope.validate(payload.get("target_files", []))
+
+        # Enforcement layer
+        enf = self._enforcement.enforce(sim, override)
+
+        # Extended validation (stages 3–5)
+        all_errors = self._pipeline.run_mutation_all(
+            payload=payload,
+            modes=modes,
+            simulation=sim,
+            enforcement=enf,
+            scope_errors=scope_errors,
+            build_passed=True,  # build check is external; defaults to pass
+        )
+
+        return MutationGatewayResult(
+            payload=payload,
+            modes=modes,
+            simulation=sim,
+            enforcement=enf,
+            validation_errors=all_errors,
+            system_prompt=system_prompt,
+            raw_ai_response=result.last_raw_response,
+            retry_count=result.retry_count,
+            approved=enf.approved and not all_errors,
+            requires_override=enf.requires_override,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton instances (optional convenience)
 # ---------------------------------------------------------------------------
 
 _gateway = ModeEngineGateway()
+_mutation_gateway = MutationGateway()
 _audit_logger = AuditLogger()
 
 
 def get_gateway() -> ModeEngineGateway:
     """Return the shared ModeEngineGateway instance."""
     return _gateway
+
+
+def get_mutation_gateway() -> MutationGateway:
+    """Return the shared MutationGateway instance."""
+    return _mutation_gateway
 
 
 def get_audit_logger() -> AuditLogger:

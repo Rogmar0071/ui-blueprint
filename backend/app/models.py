@@ -51,6 +51,11 @@ class GlobalChatMessage(SQLModel, table=True):
         default=None,
         sa_column=Column(sa.Uuid, nullable=True),
     )
+    # Active mode engine modes at the time this message was generated (JSON list).
+    selected_modes: Optional[Any] = Field(
+        default=None,
+        sa_column=Column(sa.JSON, nullable=True),
+    )
 
     def __init__(self, **data):
         if "created_at" not in data or data["created_at"] is None:
@@ -272,4 +277,62 @@ class OpsEvent(SQLModel, table=True):
         # Truncate error_detail to 2000 chars.
         if data.get("error_detail") and len(data["error_detail"]) > 2000:
             data["error_detail"] = data["error_detail"][:2000]
+        super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# mode_engine_audit_log
+# ---------------------------------------------------------------------------
+
+
+class ModeEngineAuditLog(SQLModel, table=True):
+    """Persistent audit trail for every Mode Engine + Mutation Simulation interaction."""
+
+    __tablename__ = "mode_engine_audit_log"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, index=True),
+    )
+
+    # Core audit fields (MODE_ENGINE_ENFORCEMENT_PATCH_V1 audit_layer)
+    user_intent: str = Field(sa_column=Column(sa.Text))
+    selected_modes: Optional[Any] = Field(
+        default=None, sa_column=Column(sa.JSON, nullable=True)
+    )
+    transformed_prompt: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True)
+    )
+    raw_ai_response: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True)
+    )
+    validation_results: Optional[Any] = Field(
+        default=None, sa_column=Column(sa.JSON, nullable=True)
+    )
+    retry_count: int = Field(default=0)
+    final_output: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True)
+    )
+
+    # Mutation Simulation V2 extended audit fields (null for plain chat)
+    mutation_contract: Optional[Any] = Field(
+        default=None, sa_column=Column(sa.JSON, nullable=True)
+    )
+    simulation_results: Optional[Any] = Field(
+        default=None, sa_column=Column(sa.JSON, nullable=True)
+    )
+    enforcement_results: Optional[Any] = Field(
+        default=None, sa_column=Column(sa.JSON, nullable=True)
+    )
+    build_status: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True)
+    )
+    commit_id: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True)
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
         super().__init__(**data)

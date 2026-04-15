@@ -70,6 +70,22 @@
     <string name="action_cancel">Cancel</string>
     <!-- Agent Mode toggle -->
     <string name="label_agent_mode">Agent Mode</string>
+    <!-- Mode Engine chip selector -->
+    <string name="mode_strict">Strict</string>
+    <string name="mode_prediction">Prediction</string>
+    <string name="mode_debug">Debug</string>
+    <string name="mode_audit">Audit</string>
+    <string name="mode_builder">Builder</string>
+    <string name="mode_strict_desc">Strict mode — no guessing, explicit data status required</string>
+    <string name="mode_prediction_desc">Prediction mode — assumptions, alternatives and confidence score</string>
+    <string name="mode_debug_desc">Debug mode — step-by-step reasoning and failure paths</string>
+    <string name="mode_audit_desc">Audit mode — risks, inconsistencies and assumptions surfaced</string>
+    <string name="mode_builder_desc">Builder mode — modular design with components and relationships</string>
+    <!-- Mutation Simulation V2 — error card -->
+    <string name="mutation_error_title">Mutation blocked</string>
+    <string name="mutation_error_requires_override">Risk level is high — explicit override required</string>
+    <string name="mutation_error_simulation_failed">Simulation failed: execution unsafe</string>
+    <string name="mutation_error_validation_failed">Validation failed — see errors below</string>
     <!-- Edit message dialog -->
     <string name="dialog_edit_message_title">Edit message</string>
     <string name="dialog_btn_save">Save</string>

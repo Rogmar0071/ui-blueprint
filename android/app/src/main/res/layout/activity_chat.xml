@@ -66,6 +66,67 @@
             android:layout_height="wrap_content" />
     </LinearLayout>
 
+    <!-- Mode Engine chip selector (multi-select, horizontal scroll) -->
+    <HorizontalScrollView
+        android:id="@+id/scrollModeChips"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="4dp"
+        android:scrollbars="none">
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/chipGroupModes"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            app:singleSelection="false"
+            app:selectionRequired="false">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipModeStrict"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/mode_strict"
+                android:checked="true"
+                android:contentDescription="@string/mode_strict_desc" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipModePrediction"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/mode_prediction"
+                android:contentDescription="@string/mode_prediction_desc" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipModeDebug"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/mode_debug"
+                android:contentDescription="@string/mode_debug_desc" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipModeAudit"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/mode_audit"
+                android:contentDescription="@string/mode_audit_desc" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipModeBuilder"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/mode_builder"
+                android:contentDescription="@string/mode_builder_desc" />
+
+        </com.google.android.material.chip.ChipGroup>
+    </HorizontalScrollView>
+
     <!-- Input bar pill -->
     <LinearLayout
         android:layout_width="match_parent"

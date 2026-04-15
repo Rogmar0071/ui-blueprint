@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlmodel import Session, select
 
+from backend.app import mode_engine as _me
 from backend.app.auth import require_auth
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
@@ -63,58 +64,11 @@ _TOOLS_AVAILABLE = [
     "web_search",
 ]
 
-_MODE_ENGINE_CONTRACT_ID = "MODE_ENGINE_EXECUTION_V1"
-_MODE_ENGINE_DEFAULT_MODE = "strict_mode"
-_MODE_ENGINE_MAX_RETRIES = 3
-_MODE_ENGINE_FALLBACK_MESSAGE_MAX_LENGTH = 200
-_MODE_ENGINE_MODE_RULES: dict[str, dict[str, Any]] = {
-    "prediction_mode": {
-        "behavior_rules": [
-            "must_surface_assumptions",
-            "must_provide_multiple_possibilities",
-            "must_assign_confidence_score",
-            "must_identify_missing_data",
-        ],
-        "output_requirements": ["assumptions", "alternatives", "confidence", "missing_data"],
-        "constraints": ["no_single_path_answers"],
-    },
-    "strict_mode": {
-        "behavior_rules": [
-            "no_guessing",
-            "no_inference_without_data",
-            "must_declare_insufficient_data",
-        ],
-        "output_requirements": ["explicit_data_status", "missing_data_list"],
-        "constraints": ["prohibit_assumptions_without_flagging"],
-    },
-    "debug_mode": {
-        "behavior_rules": [
-            "step_by_step_reasoning",
-            "identify_failure_points",
-            "map_causal_chain",
-        ],
-        "output_requirements": ["root_cause", "reasoning_steps", "failure_paths"],
-        "constraints": ["no_surface_level_answers"],
-    },
-    "builder_mode": {
-        "behavior_rules": [
-            "enforce_modular_design",
-            "enforce_clear_structure",
-            "avoid_ambiguity",
-        ],
-        "output_requirements": ["system_structure", "components", "relationships"],
-        "constraints": ["no_unstructured_output"],
-    },
-    "audit_mode": {
-        "behavior_rules": [
-            "identify_risks",
-            "detect_inconsistencies",
-            "highlight_assumptions",
-        ],
-        "output_requirements": ["risks", "inconsistencies", "assumptions"],
-        "constraints": ["no_unverified_acceptance"],
-    },
-}
+_MODE_ENGINE_CONTRACT_ID = _me.MODE_ENGINE_CONTRACT_ID
+_MODE_ENGINE_DEFAULT_MODE = _me.MODE_ENGINE_DEFAULT_MODE
+_MODE_ENGINE_MAX_RETRIES = _me.MODE_ENGINE_MAX_RETRIES
+_MODE_ENGINE_FALLBACK_MESSAGE_MAX_LENGTH = _me.MODE_ENGINE_FALLBACK_MESSAGE_MAX_LENGTH
+_MODE_ENGINE_MODE_RULES: dict[str, dict[str, Any]] = _me.MODE_ENGINE_MODE_RULES
 
 _CHAT_SYSTEM_PROMPT = (
     "You are UI Blueprint Assistant — a high-discipline AI that operates at system level, "
@@ -697,8 +651,7 @@ def _build_retrieval_system_prompt(db, search_results: list[dict[str, Any]]) -> 
     return base + retrieval_section
 
 
-class ModeEngineValidationError(ValueError):
-    """Raised when a mode-engine payload fails validation."""
+ModeEngineValidationError = _me.ModeEngineValidationError
 
 
 def _normalize_mode_engine_modes(
@@ -706,13 +659,7 @@ def _normalize_mode_engine_modes(
 ) -> list[ModeEngineMode]:
     if not enabled:
         return []
-
-    deduped = list(dict.fromkeys(requested_modes))
-
-    if _MODE_ENGINE_DEFAULT_MODE not in deduped:
-        deduped.insert(0, _MODE_ENGINE_DEFAULT_MODE)
-
-    return deduped
+    return _me.ModePriorityResolver().resolve(list(requested_modes))
 
 
 def _mode_engine_required_fields(
@@ -763,70 +710,13 @@ def _mode_engine_validation_errors(
     payload: dict[str, Any],
     selected_modes: list[str],
 ) -> list[str]:
-    errors: list[str] = []
-
-    if not isinstance(payload, dict):
-        return ["output must be a JSON object"]
-
-    if payload.get("contract_id") != _MODE_ENGINE_CONTRACT_ID:
-        errors.append(f'contract_id must equal "{_MODE_ENGINE_CONTRACT_ID}"')
-
-    response_modes = payload.get("selected_modes")
-    if response_modes != selected_modes:
-        errors.append("selected_modes must exactly match the enforced mode stack")
-
-    for field_name in _mode_engine_required_fields(selected_modes):
-        if field_name not in payload:
-            errors.append(f"missing required field: {field_name}")
-
-    def _require_list(name: str, minimum: int = 0) -> list[Any]:
-        value = payload.get(name)
-        if not isinstance(value, list):
-            errors.append(f"{name} must be a list")
-            return []
-        if len(value) < minimum:
-            errors.append(f"{name} must contain at least {minimum} item(s)")
-        return value
-
-    def _require_non_empty_string(name: str) -> None:
-        value = payload.get(name)
-        if not isinstance(value, str) or not value.strip():
-            errors.append(f"{name} must be a non-empty string")
-
-    if "strict_mode" in selected_modes:
-        _require_non_empty_string("explicit_data_status")
-        missing_data_list = _require_list("missing_data_list")
-        explicit_data_status = str(payload.get("explicit_data_status", "")).strip().lower()
-        if missing_data_list and explicit_data_status not in {"insufficient_data", "partial_data"}:
-            errors.append(
-                'explicit_data_status must be "insufficient_data" or "partial_data" '
-                "when missing_data_list is non-empty"
-            )
-
-    if "prediction_mode" in selected_modes:
-        _require_list("assumptions")
-        _require_list("alternatives", minimum=2)
-        confidence = payload.get("confidence")
-        if not isinstance(confidence, (int, float)):
-            errors.append("confidence must be a number")
-        _require_list("missing_data")
-
-    if "debug_mode" in selected_modes:
-        _require_non_empty_string("root_cause")
-        _require_list("reasoning_steps", minimum=1)
-        _require_list("failure_paths")
-
-    if "builder_mode" in selected_modes:
-        if payload.get("system_structure") in (None, "", []):
-            errors.append("system_structure must be present")
-        _require_list("components")
-        _require_list("relationships")
-
-    if "audit_mode" in selected_modes:
-        _require_list("risks")
-        _require_list("inconsistencies")
-        _require_list("assumptions")
-
+    pipeline = _me.ValidationPipeline()
+    stacker = _me.ModeStackingResolver()
+    merged = stacker.merge(selected_modes)
+    required_fields = merged["output_requirements"]
+    errors = pipeline.stage1_structural(payload, required_fields)
+    errors += pipeline.stage2_logical(payload, selected_modes)
+    errors += pipeline.stage3_compliance(payload, selected_modes)
     return errors
 
 
@@ -834,11 +724,11 @@ def _validate_mode_engine_payload(
     raw_text: str,
     selected_modes: list[str],
 ) -> dict[str, Any]:
+    pipeline = _me.ValidationPipeline()
     try:
-        payload = json.loads(_strip_json_code_fences(raw_text))
-    except json.JSONDecodeError as exc:
-        raise ModeEngineValidationError(f"invalid JSON: {exc.msg}") from exc
-
+        payload = pipeline.parse(raw_text)
+    except _me.ModeEngineValidationError as exc:
+        raise ModeEngineValidationError(str(exc)) from exc
     errors = _mode_engine_validation_errors(payload, selected_modes)
     if errors:
         raise ModeEngineValidationError("; ".join(errors))
@@ -850,55 +740,9 @@ def _build_mode_engine_fallback(
     selected_modes: list[str],
     reason: str,
 ) -> dict[str, Any]:
-    fallback: dict[str, Any] = {
-        "contract_id": _MODE_ENGINE_CONTRACT_ID,
-        "selected_modes": selected_modes,
-        "explicit_data_status": "insufficient_data",
-        "missing_data_list": [reason],
-    }
-
-    if "prediction_mode" in selected_modes:
-        fallback.update(
-            {
-                "assumptions": [],
-                "alternatives": [
-                    "Wait for additional verified data before deciding on a single path.",
-                    "Request more context and re-run the mode engine with the missing inputs.",
-                ],
-                "confidence": 0.0,
-                "missing_data": [reason],
-            }
-        )
-    if "debug_mode" in selected_modes:
-        fallback.update(
-            {
-                "root_cause": "Insufficient verified data to identify a root cause.",
-                "reasoning_steps": [
-                "The validator could not accept an answer backed by sufficient data.",
-                "Additional evidence is required before a causal chain can be confirmed.",
-            ],
-                "failure_paths": [message[:_MODE_ENGINE_FALLBACK_MESSAGE_MAX_LENGTH]],
-            }
-        )
-    if "builder_mode" in selected_modes:
-        fallback.update(
-            {
-                "system_structure": "Insufficient verified data to produce a structured design.",
-                "components": [],
-                "relationships": [],
-            }
-        )
-    if "audit_mode" in selected_modes:
-        fallback.update(
-            {
-                "risks": ["Proceeding without verified data could produce incorrect conclusions."],
-                "inconsistencies": [],
-                "assumptions": [
-                    "The available data is incomplete and cannot be trusted for a final answer."
-                ],
-            }
-        )
-    return fallback
+    return _me.build_structured_failure(
+        message, selected_modes, reason, failed_rules=[], missing_fields=[]
+    )
 
 
 def _call_openai_chat_with_mode_engine(
@@ -908,35 +752,17 @@ def _call_openai_chat_with_mode_engine(
     history: list[Any] | None = None,
     system_prompt: str | None = None,
 ) -> str:
-    effective_prompt = (system_prompt or _CHAT_SYSTEM_PROMPT) + _build_mode_engine_prompt(
-        selected_modes
+    """Route a mode-engine call through ModeEngineGateway (enforcement patch)."""
+    gateway = _me.get_gateway()
+    result = gateway.process(
+        message=message,
+        requested_modes=selected_modes,
+        api_key=api_key,
+        history=history,
+        base_system_prompt=system_prompt or _CHAT_SYSTEM_PROMPT,
+        ai_caller=_call_openai_chat,
     )
-    attempt_message = message
-
-    for _ in range(_MODE_ENGINE_MAX_RETRIES):
-        reply = _call_openai_chat(
-            attempt_message,
-            api_key,
-            history=history,
-            system_prompt=effective_prompt,
-        )
-        try:
-            payload = _validate_mode_engine_payload(reply, selected_modes)
-            return json.dumps(payload, indent=2, sort_keys=True)
-        except ModeEngineValidationError as exc:
-            attempt_message = (
-                f"Original user request:\n{message}\n\n"
-                f"Your previous response was rejected by the validator for these reasons:\n"
-                f"- {exc}\n\n"
-                "Return corrected JSON only."
-            )
-
-    fallback = _build_mode_engine_fallback(
-        message,
-        selected_modes,
-        "The AI response did not pass mode-engine validation.",
-    )
-    return json.dumps(fallback, indent=2, sort_keys=True)
+    return json.dumps(result.payload, indent=2, sort_keys=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1253,6 +1079,20 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 reply += _format_citations(search_results)
 
         assistant_message = _persist_message(db, "assistant", reply, context)
+
+        # Audit log every mode-engine interaction (audit_layer invariant)
+        if selected_modes:
+            _me.get_audit_logger().log(
+                db,
+                user_intent=message,
+                selected_modes=selected_modes,
+                transformed_prompt="",
+                raw_ai_response=reply,
+                validation_results=[],
+                retry_count=0,
+                final_output=reply,
+            )
+
         return _json_response(
             ChatPostResponse(
                 reply=reply,
@@ -1449,3 +1289,266 @@ async def parse_intent_v2(body: dict[str, Any]) -> JSONResponse:
         # Fallback: return the raw dict with a validation_error note.
         raw["_validation_error"] = str(exc)[:200]
         return JSONResponse(status_code=200, content=raw)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/chat/mutate  — MODE_ENGINE_MUTATION_SIMULATION_V2
+# ---------------------------------------------------------------------------
+
+
+class MutationOverrideRequest(BaseModel):
+    """Caller-supplied override for high-risk mutations (override_protocol)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    justification: str
+    acknowledged_risks: list[str]
+    override_scope: str
+
+    @field_validator("justification", "override_scope")
+    @classmethod
+    def _non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("field must not be empty")
+        return v
+
+
+class MutationRequest(BaseModel):
+    """Request body for POST /api/chat/mutate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    repo_context: dict[str, Any] | None = None
+    override: MutationOverrideRequest | None = None
+
+    @field_validator("message")
+    @classmethod
+    def _validate_message(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("message is required and must not be empty.")
+        return v
+
+
+class MutationSimulationSchema(BaseModel):
+    """Simulation layer output schema."""
+
+    model_config = ConfigDict(extra="allow")
+
+    impacted_files: list[str]
+    risk_level: str
+    predicted_failures: list[str]
+    safe_to_execute: bool
+    dependency_map: dict[str, list[str]] = Field(default_factory=dict)
+    alternative_paths: list[str] = Field(default_factory=list)
+
+
+class MutationEnforcementSchema(BaseModel):
+    """Enforcement layer output schema."""
+
+    model_config = ConfigDict(extra="allow")
+
+    approved: bool
+    requires_override: bool = False
+    blocked_reason: str | None = None
+    override_applied: bool = False
+
+
+class MutationResponse(BaseModel):
+    """Response body for POST /api/chat/mutate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = SCHEMA_VERSION
+    contract_id: str = _me.MODE_ENGINE_CONTRACT_ID
+    mutation_contract_id: str = "MODE_ENGINE_MUTATION_SIMULATION_V2"
+    approved: bool
+    requires_override: bool
+    mutation_proposal: dict[str, Any]
+    simulation: MutationSimulationSchema | None = None
+    enforcement: MutationEnforcementSchema | None = None
+    validation_errors: list[str]
+    mode_engine: ChatModeEngineResponse
+    audit_id: str | None = None
+
+
+@router.post("/chat/mutate", status_code=200, dependencies=[Depends(require_auth)])
+async def mutate(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONResponse:
+    """
+    MODE_ENGINE_MUTATION_SIMULATION_V2 — Structured code mutation proposal.
+
+    Mandatory mode stack: strict_mode + prediction_mode + builder_mode.
+
+    Lifecycle::
+
+        Stage 0  PreGenerationValidator  — block if input incomplete
+        Inject   SystemPromptInjector    — mode rules + mutation contract schema
+        AI call  MutationRetryEngine     — AI generates mutation contract
+        Simulate SimulationLayer         — dependency map, impact, failures, safety
+        Enforce  EnforcementLayer        — block unsafe; require override for high risk
+        Stage 3–5 MutationValidationPipeline
+        Audit    AuditLogger
+
+    Request body::
+
+        {
+          "message": "Add dark-mode toggle to settings screen",
+          "repo_context": { ... },    // optional
+          "override": {               // required only when risk_level == high
+            "justification": "...",
+            "acknowledged_risks": ["..."],
+            "override_scope": "settings module"
+          }
+        }
+
+    Response (HTTP 200)::
+
+        {
+          "approved": true | false,
+          "requires_override": false,
+          "mutation_proposal": { ... },
+          "simulation": { "impacted_files": [...], "risk_level": "medium",
+                          "predicted_failures": [], "safe_to_execute": true },
+          "enforcement": { "approved": true, ... },
+          "validation_errors": [],
+          "mode_engine": { "enabled": true, "modes": [...], "contract_id": "..." },
+          "audit_id": "<uuid>"
+        }
+    """
+    try:
+        request = MutationRequest.model_validate(body or {})
+    except ValidationError as exc:
+        if any(error["loc"] == ("message",) for error in exc.errors()):
+            return _error(400, "invalid_request", "message is required and must not be empty.")
+        return _error(
+            422,
+            "invalid_request",
+            "Request body failed validation.",
+            {"errors": exc.errors()},
+        )
+
+    message = request.message
+    override_dict = request.override.model_dump() if request.override else None
+
+    db = _db_session()
+    try:
+        openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+
+        mandatory_modes = _me.ModePriorityResolver().resolve(_me.MUTATION_MANDATORY_MODES)
+
+        if not openai_api_key:
+            # No API key — return structured failure immediately
+            failure = _me.build_structured_failure(
+                message,
+                mandatory_modes,
+                "OPENAI_API_KEY is not configured; AI proposal unavailable.",
+                failed_rules=["api_key_missing"],
+                missing_fields=[],
+            )
+            _me.get_audit_logger().log(
+                db,
+                user_intent=message,
+                selected_modes=mandatory_modes,
+                transformed_prompt="",
+                raw_ai_response="",
+                validation_results=["OPENAI_API_KEY is not configured"],
+                retry_count=0,
+                final_output=json.dumps(failure),
+            )
+            return _json_response(
+                MutationResponse(
+                    approved=False,
+                    requires_override=False,
+                    mutation_proposal=failure,
+                    validation_errors=["OPENAI_API_KEY is not configured"],
+                    mode_engine=ChatModeEngineResponse(
+                        enabled=True,
+                        modes=mandatory_modes,
+                        contract_id=_me.MODE_ENGINE_CONTRACT_ID,
+                    ),
+                )
+            )
+
+        base_system_prompt = _build_chat_system_prompt(db)
+        history = _load_recent_history(db)
+
+        gateway = _me.get_mutation_gateway()
+        result = gateway.process(
+            message=message,
+            api_key=openai_api_key,
+            history=history,
+            base_system_prompt=base_system_prompt,
+            ai_caller=_call_openai_chat,
+            override=override_dict,
+        )
+
+        final_json = json.dumps(result.payload, indent=2, sort_keys=True)
+
+        # Audit log
+        audit_entry = _me.get_audit_logger().log(
+            db,
+            user_intent=message,
+            selected_modes=result.modes,
+            transformed_prompt=result.system_prompt,
+            raw_ai_response=result.raw_ai_response,
+            validation_results=result.validation_errors,
+            retry_count=result.retry_count,
+            final_output=final_json,
+            mutation_contract=result.payload if not result.approved else None,
+            simulation_results=result.simulation.to_dict() if result.simulation else None,
+            enforcement_results=result.enforcement.to_dict() if result.enforcement else None,
+        )
+
+        sim_schema: MutationSimulationSchema | None = None
+        if result.simulation:
+            sim = result.simulation
+            sim_schema = MutationSimulationSchema(
+                impacted_files=sim.impacted_files,
+                risk_level=sim.risk_level,
+                predicted_failures=sim.predicted_failures,
+                safe_to_execute=sim.safe_to_execute,
+                dependency_map=sim.dependency_map,
+                alternative_paths=sim.alternative_paths,
+            )
+
+        enf_schema: MutationEnforcementSchema | None = None
+        if result.enforcement:
+            enf = result.enforcement
+            enf_schema = MutationEnforcementSchema(
+                approved=enf.approved,
+                requires_override=enf.requires_override,
+                blocked_reason=enf.blocked_reason,
+                override_applied=enf.override_applied,
+            )
+
+        return _json_response(
+            MutationResponse(
+                approved=result.approved,
+                requires_override=result.requires_override,
+                mutation_proposal=result.payload,
+                simulation=sim_schema,
+                enforcement=enf_schema,
+                validation_errors=result.validation_errors,
+                mode_engine=ChatModeEngineResponse(
+                    enabled=True,
+                    modes=result.modes,
+                    contract_id=_me.MODE_ENGINE_CONTRACT_ID,
+                ),
+                audit_id=str(audit_entry.id) if audit_entry else None,
+            )
+        )
+    except httpx.TimeoutException:
+        return _error(
+            502, "ai_provider_error", "Mutation request timed out.", {"hint": "timeout"}
+        )
+    except httpx.RequestError:
+        return _error(
+            502, "ai_provider_error", "Network error contacting AI.", {"hint": "network_error"}
+        )
+    except (httpx.HTTPStatusError, KeyError, IndexError, ValueError):
+        return _error(
+            502, "ai_provider_error", "Invalid response from AI.", {"hint": "invalid_response"}
+        )
+    finally:
+        if db is not None:
+            db.close()
