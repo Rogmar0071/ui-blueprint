@@ -136,7 +136,7 @@ class MainActivity : AppCompatActivity(),
             prefs.edit().putBoolean(PREF_AGENT_MODE, isChecked).apply()
         }
 
-        // Multi-select toolbar buttons.
+        // Multi-select action buttons.
         binding.btnSelectAll.setOnClickListener { chatAdapter.selectAll() }
         binding.btnCopySelected.setOnClickListener { onCopySelectedClicked() }
         binding.btnShareSelected.setOnClickListener { onShareSelectedClicked() }
@@ -463,6 +463,10 @@ class MainActivity : AppCompatActivity(),
     private fun updateMultiSelectToolbar() {
         val inMultiSelect = chatAdapter.isMultiSelectMode
         binding.toolbarMultiSelect.visibility = if (inMultiSelect) View.VISIBLE else View.GONE
+        binding.layoutMultiSelectActions.visibility = if (inMultiSelect) View.VISIBLE else View.GONE
+        binding.btnAttach.visibility = if (inMultiSelect) View.GONE else View.VISIBLE
+        binding.btnMic.visibility = if (inMultiSelect) View.GONE else View.VISIBLE
+        binding.btnSend.visibility = if (inMultiSelect) View.GONE else View.VISIBLE
         if (inMultiSelect) {
             val count = chatAdapter.getSelectedMessages().size
             binding.tvSelectionCount.text = resources.getQuantityString(

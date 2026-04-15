@@ -36,7 +36,8 @@ import java.util.concurrent.Executors
  * - Always-visible Copy / Share action row under each message.
  * - Edit button on user messages: opens a dialog, sends an edit request to the
  *   backend (POST /api/chat/{id}/edit), and refreshes the conversation.
- * - Long-press enters multi-select mode; toolbar shows Select All / Copy / Share / Cancel.
+ * - Long-press enters multi-select mode; selection count stays in the top bar and
+ *   action icons move into the input row.
  * - Agent Mode toggle: persisted in SharedPreferences.
  *   When enabled, sends ``X-Agent-Mode: 1`` header + ``agent_mode: true`` body
  *   so the backend formats the response with ARTIFACT_* sections.
@@ -109,7 +110,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
         setupMicButton()
 
-        // Multi-select toolbar buttons
+        // Multi-select action buttons
         binding.btnSelectAll.setOnClickListener {
             adapter.selectAll()
         }
@@ -366,6 +367,10 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     private fun updateMultiSelectToolbar() {
         val inMultiSelect = adapter.isMultiSelectMode
         binding.toolbarMultiSelect.visibility = if (inMultiSelect) View.VISIBLE else View.GONE
+        binding.layoutMultiSelectActions.visibility = if (inMultiSelect) View.VISIBLE else View.GONE
+        binding.btnAttach.visibility = if (inMultiSelect) View.GONE else View.VISIBLE
+        binding.btnMic.visibility = if (inMultiSelect) View.GONE else View.VISIBLE
+        binding.btnSend.visibility = if (inMultiSelect) View.GONE else View.VISIBLE
         if (inMultiSelect) {
             val count = adapter.getSelectedMessages().size
             binding.tvSelectionCount.text = resources.getQuantityString(

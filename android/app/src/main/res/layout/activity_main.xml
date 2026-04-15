@@ -108,41 +108,6 @@
                 android:textSize="13sp"
                 tools:text="2 selected" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnSelectAll"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:text="@string/action_select_all"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnCopySelected"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:text="@string/action_copy"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnShareSelected"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:text="@string/action_share"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnCancelSelect"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:text="@string/action_cancel"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
         </LinearLayout>
 
         <!-- Global Chat section label -->
@@ -230,6 +195,67 @@
                 android:maxLines="4"
                 android:paddingStart="8dp"
                 android:paddingEnd="8dp" />
+
+            <LinearLayout
+                android:id="@+id/layoutMultiSelectActions"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="4dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <androidx.appcompat.widget.AppCompatImageButton
+                    android:id="@+id/btnSelectAll"
+                    android:layout_width="@dimen/compact_icon_btn_size"
+                    android:layout_height="@dimen/compact_icon_btn_size"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/action_select_all"
+                    android:padding="6dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_select_all"
+                    android:tooltipText="@string/action_select_all"
+                    app:tint="@color/icon_tint" />
+
+                <androidx.appcompat.widget.AppCompatImageButton
+                    android:id="@+id/btnCopySelected"
+                    android:layout_width="@dimen/compact_icon_btn_size"
+                    android:layout_height="@dimen/compact_icon_btn_size"
+                    android:layout_marginStart="2dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/action_copy"
+                    android:padding="6dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_copy"
+                    android:tooltipText="@string/action_copy"
+                    app:tint="@color/icon_tint" />
+
+                <androidx.appcompat.widget.AppCompatImageButton
+                    android:id="@+id/btnShareSelected"
+                    android:layout_width="@dimen/compact_icon_btn_size"
+                    android:layout_height="@dimen/compact_icon_btn_size"
+                    android:layout_marginStart="2dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/action_share"
+                    android:padding="6dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_share"
+                    android:tooltipText="@string/action_share"
+                    app:tint="@color/icon_tint" />
+
+                <androidx.appcompat.widget.AppCompatImageButton
+                    android:id="@+id/btnCancelSelect"
+                    android:layout_width="@dimen/compact_icon_btn_size"
+                    android:layout_height="@dimen/compact_icon_btn_size"
+                    android:layout_marginStart="2dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/action_cancel"
+                    android:padding="6dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_cancel"
+                    android:tooltipText="@string/action_cancel"
+                    app:tint="@color/icon_tint" />
+            </LinearLayout>
 
             <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnMic"
