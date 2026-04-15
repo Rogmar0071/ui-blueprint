@@ -1494,7 +1494,7 @@ async def mutate(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONResp
             validation_results=result.validation_errors,
             retry_count=result.retry_count,
             final_output=final_json,
-            mutation_contract=result.payload if not result.approved else None,
+            mutation_contract=result.payload,
             simulation_results=result.simulation.to_dict() if result.simulation else None,
             enforcement_results=result.enforcement.to_dict() if result.enforcement else None,
         )
